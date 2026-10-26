@@ -35,6 +35,7 @@ public enum PopupPolicy {
   public static let entryGoneMessage = "This item is no longer in the history"
   public static let unscannedImageMessage = "Not checked for secrets yet, so it was copied as concealed and is cleared from the clipboard shortly. Press ⌘V where you want it."
   public static let unscannedImagePastedMessage = "Pasted as concealed: this image was not checked for secrets, so it is cleared from the clipboard in a moment."
+  public static let copiedWithoutTargetMessage = "Copied — no app to paste into. Press ⌘V where you want it."
 
   public static let hiddenFlaggedThumbnailHelp = "Preview hidden: this image shows sensitive data"
   public static let hiddenUnscannedThumbnailHelp = "Preview hidden: this image has not been checked for secrets"
@@ -50,6 +51,19 @@ public enum PopupPolicy {
   public static func hiddenThumbnailHelp(for entry: ClipboardEntry, unscanned: Bool) -> String? {
     guard entry.kind == .image, !showsThumbnail(of: entry, unscanned: unscanned) else { return nil }
     return entry.findings.isEmpty ? hiddenUnscannedThumbnailHelp : hiddenFlaggedThumbnailHelp
+  }
+
+  /// `hiddenThumbnailHelp` decided from the store's current state (`HistoryStore.pasteState`) rather
+  /// than from the row's snapshot, which a late OCR result may have flagged since it was loaded.
+  /// `live` nil (the entry is gone, or the store cannot tell) hides the pixels, and so does a
+  /// snapshot that is already flagged.
+  public static func hiddenThumbnailHelp(for entry: ClipboardEntry,
+                                         live: (entry: ClipboardEntry, unscanned: Bool)?) -> String? {
+    guard entry.kind == .image else { return nil }
+    guard let live, live.entry.kind == .image, entry.findings.isEmpty else {
+      return entry.findings.isEmpty ? hiddenUnscannedThumbnailHelp : hiddenFlaggedThumbnailHelp
+    }
+    return hiddenThumbnailHelp(for: live.entry, unscanned: live.unscanned)
   }
 
   /// The recognised text of an image entry, if any (whitespace-only counts as none).
@@ -118,22 +132,74 @@ public enum PopupPolicy {
   }
 }
 
+/// What the popup does once a paste or copy has been carried out.
+public enum PopupFollowUp: Equatable, Sendable {
+  case close
+  /// Keep the popup open showing this message.
+  case stay(String)
+  /// Close (or stay closed) and show this message in the non-activating HUD.
+  case closeWithHUD(String, seconds: TimeInterval)
+}
+
+extension PopupPolicy {
+  /// The entry to act on, read from the store when the action runs: a late OCR result may have
+  /// flagged it since the list was loaded. `live` is the store's `pasteState`, or nil when the entry
+  /// is gone; `storeKnowsScans` false (a store that cannot say whether an image was scanned) treats
+  /// every image as unscanned. `.gone` means: show `entryGoneMessage` and reload.
+  public enum ActionTarget: Equatable, Sendable {
+    case entry(ClipboardEntry, unscanned: Bool)
+    case gone
+  }
+
+  public static func actionTarget(snapshot: ClipboardEntry, storeKnowsScans: Bool,
+                                  live: (entry: ClipboardEntry, unscanned: Bool)?) -> ActionTarget {
+    guard storeKnowsScans else { return .entry(snapshot, unscanned: snapshot.kind == .image) }
+    guard let live else { return .gone }
+    return .entry(live.entry, unscanned: live.unscanned)
+  }
+
+  /// Copy-only (⌘C): an image never checked for secrets is copied concealed and cleared shortly, so
+  /// the popup stays open to say so; anything else closes it.
+  public static func followUpAfterCopy(unscanned: Bool) -> PopupFollowUp {
+    unscanned ? .stay(unscannedImageMessage) : .close
+  }
+
+  /// A paste with no app to paste into: the content was only copied, and the popup stays open.
+  public static func followUpWithoutTarget(unscanned: Bool) -> PopupFollowUp {
+    .stay(unscanned ? unscannedImageMessage : copiedWithoutTargetMessage)
+  }
+
+  /// After the popup closed for a paste: `route` is the one `PasteService.paste` took. Only an
+  /// unscanned image gets a note, since it is concealed and cleared from the clipboard.
+  public static func followUpAfterPaste(route: PasteRoute, unscanned: Bool) -> PopupFollowUp {
+    guard unscanned else { return .close }
+    return route == .paste ? .closeWithHUD(unscannedImagePastedMessage, seconds: 3)
+                           : .closeWithHUD(unscannedImageMessage, seconds: 4)  // copy-only: no Accessibility
+  }
+}
+
 /// Vault and history-file state shown in Settings.
 public struct VaultStatus: Equatable, Sendable {
   public var isReadOnly: Bool
   public var isRestoring: Bool
   public var unsavedPinCount: Int
+  /// Pinned images flagged after they were saved that could not be listed in the flagged-pins
+  /// file, so the last write left them out (see `HistoryStore.flaggedPinsNotSaved`).
+  public var unsavedFlaggedImageCount: Int
 
-  public init(isReadOnly: Bool = false, isRestoring: Bool = false, unsavedPinCount: Int = 0) {
+  public init(isReadOnly: Bool = false, isRestoring: Bool = false, unsavedPinCount: Int = 0,
+              unsavedFlaggedImageCount: Int = 0) {
     self.isReadOnly = isReadOnly; self.isRestoring = isRestoring; self.unsavedPinCount = unsavedPinCount
+    self.unsavedFlaggedImageCount = unsavedFlaggedImageCount
   }
 
   public init(_ store: HistoryStore) {
     self.init(isReadOnly: store.isReadOnly, isRestoring: store.isRestoringVault,
-              unsavedPinCount: store.pinsNotSavedToVault.count)
+              unsavedPinCount: store.pinsNotSavedToVault.count,
+              unsavedFlaggedImageCount: store.flaggedPinsNotSaved.count)
   }
 
-  public var isHealthy: Bool { !isReadOnly && !isRestoring && unsavedPinCount == 0 }
+  public var isHealthy: Bool { !isReadOnly && !isRestoring && unsavedPinCount == 0 && unsavedFlaggedImageCount == 0 }
   /// Retry only helps pins the vault refused; a read-only history is never written this session.
   public var canRetry: Bool { unsavedPinCount > 0 }
 
@@ -146,6 +212,10 @@ public struct VaultStatus: Equatable, Sendable {
     if unsavedPinCount > 0 {
       let pins = unsavedPinCount == 1 ? "1 pinned sensitive item was" : "\(unsavedPinCount) pinned sensitive items were"
       out.append("\(pins) not saved to the Keychain. Until saved, the exact text lives in memory only and is lost on quit (the saved copy is masked).")
+    }
+    if unsavedFlaggedImageCount > 0 {
+      let pins = unsavedFlaggedImageCount == 1 ? "1 pinned image with sensitive text was" : "\(unsavedFlaggedImageCount) pinned images with sensitive text were"
+      out.append("\(pins) not saved: the list that keeps them flagged after a relaunch could not be written. They stay in memory only and are lost on quit unless a later save succeeds.")
     }
     if isRestoring {
       out.append("Unlocking pinned sensitive items from the Keychain…")

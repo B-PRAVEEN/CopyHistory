@@ -10,10 +10,14 @@ public protocol PasteKeyMonitoring: AnyObject {
   /// Whether the release of each reported ⌘V is delivered too (`PasteStackKeyPress.isKeyUp`). Then
   /// the stack advances `advanceDelay` after the key-up rather than after the key-down.
   var reportsKeyUp: Bool { get }
+  /// Whether `keyCode` is held down right now. A ⌘V held past `PasteStackEngine.keyUpTimeout`
+  /// keeps the advance waiting for its release instead of advancing under the user's finger.
+  func isKeyDown(_ keyCode: UInt16) -> Bool
 }
 
 extension PasteKeyMonitoring {
   public var reportsKeyUp: Bool { false }
+  public func isKeyDown(_ keyCode: UInt16) -> Bool { false }
 }
 
 /// Puts stack entries on the pasteboard.
@@ -97,7 +101,8 @@ public final class PasteStackPasteboardWriter: PasteStackWriting {
 /// it; `advanceDelay` after the key is released (after the press, for a monitor that does not report
 /// releases) — time for the target app to read the pasteboard — the head is popped and the next
 /// entry written. Presses inside that window restart it, so a double-tap advances once. A release
-/// that never arrives (e.g. the tap was disabled mid-press) advances after `keyUpTimeout`.
+/// that never arrives (e.g. the tap was disabled mid-press) advances after `keyUpTimeout`, unless the
+/// key is still held then: a held ⌘V advances exactly once, after its release.
 /// A target that reads the pasteboard later than that (a remote desktop, a stalled app) can still
 /// get the next entry.
 /// When the last entry has been pasted the mode ends (`.finished`); `cancel()` ends it early.
@@ -275,7 +280,7 @@ public final class PasteStackEngine {
       generation += 1
       if keyMonitor?.reportsKeyUp == true {
         awaitingKeyUp = key.keyCode
-        scheduleAdvance(after: Self.keyUpTimeout)  // only if the release is lost
+        scheduleAdvance(after: Self.keyUpTimeout, unlessHeld: true)  // only if the release is lost
       } else {
         scheduleAdvance(after: advanceDelay)
       }
@@ -294,10 +299,15 @@ public final class PasteStackEngine {
   }
 
   /// Runs the advance `delay` from now unless another ⌘V press or release comes first.
-  private func scheduleAdvance(after delay: TimeInterval) {
+  /// `unlessHeld`: the key-up timeout; while the awaited key is still down it waits another round.
+  private func scheduleAdvance(after delay: TimeInterval, unlessHeld: Bool = false) {
     let current = generation
     schedule(delay) { [weak self] in
       guard let self, current == self.generation else { return }
+      if unlessHeld, let pending = self.awaitingKeyUp, self.keyMonitor?.isKeyDown(pending) == true {
+        self.scheduleAdvance(after: delay, unlessHeld: true)
+        return
+      }
       let pastedHead = self.pastedHeadSinceAdvance
       self.pastedHeadSinceAdvance = false
       self.awaitingKeyUp = nil

@@ -32,6 +32,9 @@ public struct VisionOCR: OCRScanning {
   public var maxTotalPixels: Int
   public var timeBudget: TimeInterval
   public var maxTextLength: Int
+  /// Called on the recognition queue just before strip `n` is recognised, once its request can be
+  /// cancelled (tests: cancel a scan that is really running).
+  var willRecognizeStrip: (@Sendable (_ n: Int) -> Void)?
 
   /// One recognition at a time: a burst of screenshots queues instead of decoding all at once.
   private static let queue = DispatchQueue(label: "CopyHistory.VisionOCR", qos: .utility)
@@ -97,6 +100,7 @@ public struct VisionOCR: OCRScanning {
     let once = ResumeOnce()
     let maxLength = maxTextLength
     let budget = min(timeBudget, OCRDeadline.maxSeconds)
+    let willRecognizeStrip = willRecognizeStrip
     // Cancelling the calling task (e.g. `OCRDeadline` giving up) stops the Vision request at once,
     // so the serial queue is free for the next image and its full budget.
     return await withTaskCancellationHandler {
@@ -115,6 +119,7 @@ public struct VisionOCR: OCRScanning {
             request.recognitionLevel = .accurate
             request.usesLanguageCorrection = true
             guard once.install(cancel: { request.cancel() }) else { return }
+            willRecognizeStrip?(i)
             let handler = VNImageRequestHandler(cgImage: tile, options: [:])
             do { try handler.perform([request]) } catch { once.resume(.failed); return }
             guard !once.isDone else { return }

@@ -75,6 +75,8 @@ public final class TransformSession {
   private let runner: Runner
   private var task: Task<Void, Never>?
   private var generation = 0  // bumped per run and on cancel; stale completions are dropped
+  /// The running task, so tests can await a run (also a cancelled one) to its end.
+  var currentRun: Task<Void, Never>? { task }
 
   public init(runner: @escaping Runner = { try await TransformRunner.run($0, on: $1) }) {
     self.runner = runner

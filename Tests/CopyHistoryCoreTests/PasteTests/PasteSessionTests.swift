@@ -113,9 +113,13 @@ private func flagged(_ text: String) -> ClipboardEntry {
     let first = ClipboardEntry(kind: .text, text: "first")
     let second = ClipboardEntry(kind: .text, text: "second")
     session.start(EchoTransform(), on: first) { delivered.append($0.entryID) }
+    let firstRun = session.currentRun
     session.cancel()
     session.start(EchoTransform(), on: second) { delivered.append($0.entryID) }
-    try await Task.sleep(for: .milliseconds(500))
+    let secondRun = session.currentRun
+    // Both awaited to their end (review F2-L6), not a fixed sleep that a loaded machine outlasts.
+    if let firstRun { await firstRun.value }
+    if let secondRun { await secondRun.value }
     #expect(delivered == [second.id])
   }
 

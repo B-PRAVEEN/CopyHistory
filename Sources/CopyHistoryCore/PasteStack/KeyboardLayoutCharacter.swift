@@ -45,18 +45,31 @@ public enum KeyboardLayoutCharacter {
   /// The keycode that types "v" with ⌘ in `layout` (9 on QWERTY, 47 on Dvorak), or nil. Keycode 9
   /// is tried first, so layouts that keep ⌘V there are never moved to a duplicate key.
   public static func commandVKeyCode(layout: Data, keyboardType: UInt32 = UInt32(LMGetKbdType())) -> UInt16? {
-    let isV = { (keyCode: UInt16) in
-      character(forKeyCode: keyCode, layout: layout, keyboardType: keyboardType)?.lowercased() == "v"
+    commandVKeyCode(primary: { character(forKeyCode: $0, layout: layout, keyboardType: keyboardType) },
+                    asciiCapable: { _ in nil })
+  }
+
+  /// The keycode whose ⌘ character, chosen as `commandCharacter` chooses it (the primary layout's if
+  /// ASCII, else the ASCII-capable layout's), is "v"; keycode 9 first. This is how AppKit resolves the
+  /// key equivalent and how the Paste Stack's tap classifies the press, so a posted ⌘V is read as ⌘V
+  /// by both, also on a layout whose ⌘ layer types native letters. nil when no key qualifies.
+  static func commandVKeyCode(primary: (UInt16) -> String?, asciiCapable: (UInt16) -> String?) -> UInt16? {
+    func isV(_ keyCode: UInt16) -> Bool {
+      commandCharacter(primary: primary(keyCode), asciiCapable: { asciiCapable(keyCode) })?.lowercased() == "v"
     }
     if isV(PasteStackKeyPress.vKeyCode) { return PasteStackKeyPress.vKeyCode }
     return (0...127).first(where: isV)
   }
 
   /// The keycode to post for a synthetic ⌘V in the active layout, so the target app reads "v" (and
-  /// the Paste Stack's tap, which classifies by the same layout, sees ⌘V). Falls back to keycode 9.
+  /// the Paste Stack's tap, which classifies the same way, sees ⌘V). Falls back to keycode 9, which
+  /// the tap also counts as ⌘V when no layout character is known.
   /// Call on the main thread (Text Input Sources requirement).
   public static func currentCommandVKeyCode() -> UInt16 {
-    currentLayoutData().flatMap { commandVKeyCode(layout: $0) } ?? PasteStackKeyPress.vKeyCode
+    let primary = currentLayoutData(), ascii = asciiCapableLayoutData()
+    return commandVKeyCode(primary: { code in primary.flatMap { character(forKeyCode: code, layout: $0) } },
+                           asciiCapable: { code in ascii.flatMap { character(forKeyCode: code, layout: $0) } })
+      ?? PasteStackKeyPress.vKeyCode
   }
 
   static func currentLayoutData() -> Data? {

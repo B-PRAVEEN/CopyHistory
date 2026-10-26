@@ -231,6 +231,11 @@ final class CommandVEventTap: PasteKeyMonitoring {
   /// The engine advances after the ⌘V key is released, not when it goes down.
   var reportsKeyUp: Bool { true }
 
+  /// The hardware state, so a ⌘V held past the key-up timeout does not advance yet.
+  func isKeyDown(_ keyCode: UInt16) -> Bool {
+    CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(keyCode))
+  }
+
   func start(onKey: @escaping @MainActor (PasteStackKeyPress) -> Void) -> Bool {
     stop()
     let mask = CGEventMask(1 << CGEventType.keyDown.rawValue) | CGEventMask(1 << CGEventType.keyUp.rawValue)

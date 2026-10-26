@@ -222,9 +222,11 @@ private func expectFlaggedKeptPin(_ store: HistoryStore, _ id: UUID, url: URL) t
 }
 
 /// A side file that exists but cannot be used fails closed: every pinned image loaded from disk is
-/// treated as a kept flagged pin. Nothing crashes and nothing is lost.
+/// treated as a kept flagged pin. Nothing crashes and nothing is lost. Review F2-L1: that state is
+/// never written back, so the bad file is left as it is and a later successful read restores the truth
+/// (see `SideFileRecoveryTests`).
 @Suite struct FlaggedPinSideFileFailClosedTests {
-  private func expectFailsClosed(corrupt: (URL) throws -> Void, restore: (URL) -> Void = { _ in }) throws {
+  private func expectFailsClosed(corrupt: (URL) throws -> Void) throws {
     let url = tempURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
     let pin = savedCleanPin(url: url)
     // An unpinned clean image is not a pin: it stays clean.
@@ -234,28 +236,29 @@ private func expectFlaggedKeptPin(_ store: HistoryStore, _ id: UUID, url: URL) t
     seed.applyOCR(OCRUpdate(entryID: loose.id, imagePNG: png, scanned: true, ocrText: nil))
     seed.flush()
     try corrupt(sideURL(next: url))
+    let bad = try Data(contentsOf: sideURL(next: url))
 
     let reopened = HistoryStore(fileURL: url, purgeInterval: nil, vault: InMemoryVault())
     try expectFlaggedKeptPin(reopened, pin.id, url: url)
     let looseEntry = try #require(reopened.entries(matching: "").first { $0.id == loose.id })
     #expect(looseEntry.findings.isEmpty)
-    restore(sideURL(next: url))
     reopened.flush()
     try expectFlaggedKeptPin(reopened, pin.id, url: url)
     #expect(exists(pngURL(loose.id, next: url)))
 
-    // The next write replaces the bad file with a valid list, so the next launch agrees.
+    // Later writes leave the bad file alone (the fail-closed set is never persisted), and the next
+    // launch fails closed again rather than trusting anything.
     _ = reopened.add(ClipboardEntry(kind: .text, text: "touch"))
     reopened.flush()
-    #expect(listedIDs(next: url) == [pin.id])
-    #expect(permissions(sideURL(next: url)) == 0o600)
+    #expect(try Data(contentsOf: sideURL(next: url)) == bad)
+    try expectFlaggedKeptPin(reopened, pin.id, url: url)
     try expectFlaggedKeptPin(open(url), pin.id, url: url)
 
     // Unpinning is still what removes it.
     reopened.togglePin(pin.id)
     reopened.flush()
     #expect(!exists(pngURL(pin.id, next: url)))
-    #expect(!exists(sideURL(next: url)))
+    #expect(try Data(contentsOf: sideURL(next: url)) == bad)
   }
 
   @Test func garbageBytes() throws {
@@ -270,17 +273,32 @@ private func expectFlaggedKeptPin(_ store: HistoryStore, _ id: UUID, url: URL) t
     try expectFailsClosed { try Data("{\"ids\":[]}".utf8).write(to: $0) }
   }
 
-  @Test func unreadableFile() throws {
-    try expectFailsClosed(corrupt: { url in
-      try Data("[]".utf8).write(to: url)
-      try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: url.path)
-    }, restore: { url in
-      try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-    })
+  /// Fails closed while unreadable; once it can be read again, the next write restores the true
+  /// (empty) set without touching any file.
+  @Test func unreadableFileRecoversOnTheNextWrite() throws {
+    let url = tempURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+    let pin = savedCleanPin(url: url)
+    try Data("[]".utf8).write(to: sideURL(next: url))
+    try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: sideURL(next: url).path)
+    let reopened = HistoryStore(fileURL: url, purgeInterval: nil, vault: InMemoryVault())
+    try expectFlaggedKeptPin(reopened, pin.id, url: url)
+    reopened.flush()
+    try expectFlaggedKeptPin(reopened, pin.id, url: url)
+
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: sideURL(next: url).path)
+    _ = reopened.add(ClipboardEntry(kind: .text, text: "touch"))
+    reopened.flush()
+    let entry = try #require(reopened.entries(matching: "").first { $0.id == pin.id })
+    #expect(entry.findings.isEmpty)
+    #expect(PopupPolicy.showsThumbnail(of: entry, unscanned: reopened.isUnscannedImage(pin.id)))
+    #expect(reopened.flaggedPinsKeptOnDisk.isEmpty)
+    #expect(exists(pngURL(pin.id, next: url)))
+    #expect(try Data(contentsOf: sideURL(next: url)) == Data("[]".utf8))
+    #expect(open(url).entries(matching: "").first { $0.id == pin.id }?.findings.isEmpty == true)
   }
 
   /// A legacy pinned image stored inline in the JSON is not lost when failing closed: it is kept,
-  /// flagged, and its PNG moves to `images/`.
+  /// flagged, and its PNG moves to `images/`. The bad side file is left as it is.
   @Test func legacyInlinePinIsKept() throws {
     let url = tempURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
     try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -294,7 +312,7 @@ private func expectFlaggedKeptPin(_ store: HistoryStore, _ id: UUID, url: URL) t
     let store = open(url)
     try expectFlaggedKeptPin(store, legacy.id, url: url)
     #expect(!fileText(url).contains("imagePNG"))
-    #expect(listedIDs(next: url) == [legacy.id])
+    #expect(fileText(sideURL(next: url)) == "garbage")
 
     let again = open(url)
     try expectFlaggedKeptPin(again, legacy.id, url: url)

@@ -478,7 +478,9 @@ private extension FakePasteboard {
     return id
   }
 
-  @Test func legacyPinnedFlaggedImageLeavesDiskOnceConfirmed() throws {
+  /// Review F2-L5: like a saved pin a later scan flagged, a legacy flagged image pin keeps its files
+  /// until unpinned (its OCR text only masked on disk); see `LegacyVaultImagePinTests`.
+  @Test func legacyPinnedFlaggedImageIsKeptOnDiskOnceConfirmed() throws {
     let url = tempURL(); let dir = url.deletingLastPathComponent()
     defer { try? FileManager.default.removeItem(at: dir) }
     let id = try legacyPinnedImage(at: url, ocrText: "staging key: sk-proj-••••••••")
@@ -488,8 +490,10 @@ private extension FakePasteboard {
     store.flush(); store.flush()  // restore, then the write it scheduled
     let e = try #require(store.entries(matching: "").first)
     #expect(e.id == id && e.pinned && !e.findings.isEmpty && e.imagePNG == pngA)
-    #expect(imageFiles(dir).isEmpty)
-    #expect(!jsonString(url).contains(id.uuidString))
+    #expect(imageFiles(dir) == ["\(id.uuidString).png"])
+    #expect(jsonString(url).contains(id.uuidString))
+    #expect(!jsonString(url).contains(ocrSecret))
+    #expect(store.flaggedPinsKeptOnDisk == [id])
   }
 
   /// Known issue from the Phase 2 review: a pinned image whose vault read failed pasted unmarked.

@@ -29,6 +29,7 @@ final class PopupViewModel: ObservableObject {
   private let historyStore: HistoryStore?
   // Main-thread confined; nonisolated so deinit can always remove it.
   nonisolated(unsafe) private var restoreObserver: NSObjectProtocol?
+  nonisolated(unsafe) private var updateObserver: NSObjectProtocol?
 
   init(services: AppServices, settings: AppSettings, pasteService: PasteService) {
     self.services = services
@@ -37,24 +38,29 @@ final class PopupViewModel: ObservableObject {
     historyStore = services.store as? HistoryStore
     // Posted on the store's queue once vaulted pins have their plaintext back; until then they are
     // listed masked. A restore that finished before this point is picked up by the next show.
+    // Both observers hop to main themselves (`queue: nil`): with `queue: .main` a post from the
+    // store's queue waits for the main thread, which deadlocks while main is in `flush()`.
     if let historyStore {
       restoreObserver = NotificationCenter.default.addObserver(
-        forName: HistoryStore.didRestoreVaultNotification, object: historyStore, queue: .main
-      ) { [weak self] _ in MainActor.assumeIsolated { self?.vaultRestored() } }
+        forName: HistoryStore.didRestoreVaultNotification, object: historyStore, queue: nil
+      ) { [weak self] _ in DispatchQueue.main.async { MainActor.assumeIsolated { self?.vaultRestored() } } }
+      // A late OCR result can flag a listed image: reload so its row is masked and its pixels hidden.
+      updateObserver = NotificationCenter.default.addObserver(
+        forName: HistoryStore.didUpdateEntriesNotification, object: historyStore, queue: nil
+      ) { [weak self] _ in DispatchQueue.main.async { MainActor.assumeIsolated { self?.reloadKeepingSelection() } } }
     }
     settings.attach(store: historyStore)  // after observing, so a restore in between still refreshes it
   }
 
   deinit {
     if let restoreObserver { NotificationCenter.default.removeObserver(restoreObserver) }
+    if let updateObserver { NotificationCenter.default.removeObserver(updateObserver) }
   }
 
   private var isRestoringVault: Bool { historyStore?.isRestoringVault ?? false }
 
   private func vaultRestored() {
-    let selectedID = selectedEntry?.id
-    reload()
-    if let selectedID, let i = items.firstIndex(where: { $0.id == selectedID }) { selection = i }
+    reloadKeepingSelection()
     if message == PopupPolicy.restoringVaultMessage { message = nil }
     settings.refreshVaultStatus()
   }
@@ -87,6 +93,12 @@ final class PopupViewModel: ObservableObject {
     selection = items.isEmpty ? 0 : min(selection, items.count - 1)
   }
 
+  private func reloadKeepingSelection() {
+    let selectedID = selectedEntry?.id
+    reload()
+    if let selectedID, let i = items.firstIndex(where: { $0.id == selectedID }) { selection = i }
+  }
+
   var selectedEntry: ClipboardEntry? { items.indices.contains(selection) ? items[selection] : nil }
 
   func displayText(for entry: ClipboardEntry) -> String {
@@ -97,21 +109,23 @@ final class PopupViewModel: ObservableObject {
 
   /// Snippet of the text recognised in an image entry (masked when flagged), or nil.
   func ocrSnippet(for entry: ClipboardEntry) -> String? {
-    PopupPolicy.ocrSnippet(for: entry, detector: services.detector)
+    guard entry.kind == .image else { return nil }
+    return PopupPolicy.ocrSnippet(for: historyStore?.pasteState(of: entry.id)?.entry ?? entry, detector: services.detector)
   }
 
   /// Tooltip for an image row whose pixels are hidden (flagged, or never checked for secrets).
+  /// Decided from the store as it is now: the row's snapshot may predate an OCR result that flagged
+  /// it. Other stores cannot say whether the image was scanned (nil): fail closed.
   func hiddenThumbnailHelp(for entry: ClipboardEntry) -> String? {
     guard entry.kind == .image else { return nil }
-    // Other stores cannot say whether the image was scanned: fail closed.
-    let unscanned = historyStore?.isUnscannedImage(entry.id) ?? true
-    return PopupPolicy.hiddenThumbnailHelp(for: entry, unscanned: unscanned)
+    return PopupPolicy.hiddenThumbnailHelp(for: entry, live: historyStore?.pasteState(of: entry.id))
   }
 
   /// A warning shown on the row, e.g. a saved pin flagged later (it is kept on disk until unpinned).
   func rowNote(for entry: ClipboardEntry) -> String? {
-    guard entry.kind == .image, entry.pinned, !entry.findings.isEmpty,
-          historyStore?.flaggedPinsKeptOnDisk.contains(entry.id) == true else { return nil }
+    guard entry.kind == .image, entry.pinned, let historyStore,
+          historyStore.pasteState(of: entry.id)?.entry.findings.isEmpty == false,
+          historyStore.flaggedPinsKeptOnDisk.contains(entry.id) else { return nil }
     return PopupPolicy.flaggedPinKeptOnDiskNote
   }
 
@@ -192,19 +206,21 @@ final class PopupViewModel: ObservableObject {
   /// The entry as stored now (a late OCR result may have flagged it since the list was loaded) and
   /// whether it is an image never checked for secrets. nil, with a message, when it is gone.
   private func pasteState(of entry: ClipboardEntry) -> (entry: ClipboardEntry, unscanned: Bool)? {
-    guard let historyStore else { return (entry, entry.kind == .image) }  // other stores: fail closed
-    guard let state = historyStore.pasteState(of: entry.id) else {
+    // Other stores: every image counts as unscanned (fail closed).
+    switch PopupPolicy.actionTarget(snapshot: entry, storeKnowsScans: historyStore != nil,
+                                    live: historyStore?.pasteState(of: entry.id)) {
+    case .entry(let current, let unscanned):
+      return (current, unscanned)
+    case .gone:
       message = PopupPolicy.entryGoneMessage
       reload()
       return nil
     }
-    return state
   }
 
   /// `unscanned`: the content comes from an image never checked for secrets. It is written as
   /// concealed and cleared shortly, so a copy the user pastes by hand keeps the popup open to say so.
   private func perform(_ decision: PasteDecision, copyOnly: Bool, unscanned: Bool = false) {
-    let note = unscanned ? PopupPolicy.unscannedImageMessage : nil
     switch decision {
     case .none:
       return
@@ -213,26 +229,35 @@ final class PopupViewModel: ObservableObject {
     case .deliver(let content, let sensitive):
       if copyOnly {
         pasteService.copy(content, sensitive: sensitive)
-        if let note { message = note } else { onClose() }
+        follow(PopupPolicy.followUpAfterCopy(unscanned: unscanned))
       } else {
-        deliver(content, sensitive: sensitive, note: note)
+        deliver(content, sensitive: sensitive, unscanned: unscanned)
       }
     }
   }
 
   /// Pastes into the captured app, or — when there is none (CopyHistory itself was frontmost) —
-  /// copies and keeps the popup open to say so (`note`, if given) instead of typing ⌘V into a stale target.
-  private func deliver(_ content: PasteContent, sensitive: Bool?, note: String? = nil) {
+  /// copies and keeps the popup open to say so instead of typing ⌘V into a stale target.
+  private func deliver(_ content: PasteContent, sensitive: Bool?, unscanned: Bool = false) {
     guard pasteService.hasPasteTarget else {
       pasteService.copy(content, sensitive: sensitive)
-      message = note ?? "Copied — no app to paste into. Press ⌘V where you want it."
+      follow(PopupPolicy.followUpWithoutTarget(unscanned: unscanned))
       return
     }
     onClose()
-    if pasteService.paste(content, sensitive: sensitive) == .paste, note != nil {
-      hud.show(PopupPolicy.unscannedImagePastedMessage, duration: 3)
-    } else if let note {
-      hud.show(note, duration: 4)  // copy-only (no Accessibility): the popup is already closed
+    let route = pasteService.paste(content, sensitive: sensitive)
+    if case .closeWithHUD(let text, let seconds) = PopupPolicy.followUpAfterPaste(route: route, unscanned: unscanned) {
+      hud.show(text, duration: seconds)  // the popup is already closed
+    }
+  }
+
+  private func follow(_ followUp: PopupFollowUp) {
+    switch followUp {
+    case .close: onClose()
+    case .stay(let text): message = text
+    case .closeWithHUD(let text, let seconds):
+      onClose()
+      hud.show(text, duration: seconds)
     }
   }
 
