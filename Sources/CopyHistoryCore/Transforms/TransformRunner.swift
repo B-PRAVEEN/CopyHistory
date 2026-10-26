@@ -61,7 +61,7 @@ public enum TransformRunner {
   public static func run(_ transform: any Transform, on text: String,
                          timeout: TimeInterval = defaultTimeout,
                          limiter: Limiter = .shared) async throws -> String {
-    let once = Once()
+    let once = TransformRunOnce()
     return try await withTaskCancellationHandler {
       try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
         guard once.install(continuation) else { return }
@@ -78,9 +78,9 @@ public enum TransformRunner {
         thread.stackSize = 32 * 1024 * 1024
         thread.threadDictionary[flagKey] = once.cancellation
         thread.start()
-        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
-          once.resume(.failure(TransformError.timedOut))
-        }
+        let timer = DispatchWorkItem { once.resume(.failure(TransformError.timedOut)) }
+        once.setTimer(timer)
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timer)
       }
     } onCancel: {
       once.resume(.failure(CancellationError()))
@@ -125,11 +125,13 @@ final class RunCancellation: @unchecked Sendable {
 }
 
 /// Resumes a continuation exactly once, whichever of work, deadline or cancellation comes first.
-/// When the deadline or cancellation wins, `cancellation` is set so the worker stops early.
-private final class Once: @unchecked Sendable {
+/// When the deadline or cancellation wins, `cancellation` is set so the worker stops early. The
+/// deadline timer is cancelled once a result is in.
+final class TransformRunOnce: @unchecked Sendable {
   let cancellation = RunCancellation()
   private let lock = NSLock()
   private var continuation: CheckedContinuation<String, Error>?
+  private var timer: DispatchWorkItem?
   private var early: Result<String, Error>?  // cancellation that arrived before `install`
   private var done = false
 
@@ -147,6 +149,14 @@ private final class Once: @unchecked Sendable {
     return true
   }
 
+  /// Cancelled when the result is in (at once if it already is).
+  func setTimer(_ t: DispatchWorkItem) {
+    lock.lock()
+    guard !done else { lock.unlock(); t.cancel(); return }
+    timer = t
+    lock.unlock()
+  }
+
   func resume(_ result: Result<String, Error>) {
     lock.lock()
     guard !done else { lock.unlock(); return }
@@ -157,7 +167,10 @@ private final class Once: @unchecked Sendable {
     }
     done = true
     continuation = nil
+    let t = timer
+    timer = nil
     lock.unlock()
+    t?.cancel()
     // Harmless when the work itself finished: the thread is about to exit.
     cancellation.cancel()
     c.resume(with: result)

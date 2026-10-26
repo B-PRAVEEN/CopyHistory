@@ -225,10 +225,15 @@ final class CommandVEventTap: PasteKeyMonitoring {
   nonisolated(unsafe) private var port: CFMachPort?
   nonisolated(unsafe) private var source: CFRunLoopSource?
   private var onKey: (@MainActor (PasteStackKeyPress) -> Void)?
+  /// Keycode of the last ⌘V press reported; its release is reported too (with whatever modifiers).
+  private var pendingKeyUp: UInt16?
+
+  /// The engine advances after the ⌘V key is released, not when it goes down.
+  var reportsKeyUp: Bool { true }
 
   func start(onKey: @escaping @MainActor (PasteStackKeyPress) -> Void) -> Bool {
     stop()
-    let mask = CGEventMask(1 << CGEventType.keyDown.rawValue)
+    let mask = CGEventMask(1 << CGEventType.keyDown.rawValue) | CGEventMask(1 << CGEventType.keyUp.rawValue)
     // Unretained: the controller owns this tap for the app's lifetime, and stop()/deinit remove it.
     let userInfo = Unmanaged.passUnretained(self).toOpaque()
     guard let port = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap,
@@ -256,6 +261,7 @@ final class CommandVEventTap: PasteKeyMonitoring {
 
   func stop() {
     onKey = nil
+    pendingKeyUp = nil
     Self.tearDown(port: port, source: source)
     port = nil
     source = nil
@@ -278,8 +284,17 @@ final class CommandVEventTap: PasteKeyMonitoring {
       if let port { CGEvent.tapEnable(tap: port, enable: true) }
     case .keyDown:
       guard onKey != nil, let press = Self.keyPress(from: event), press.action != .ignore else { return }
+      if press.action == .paste { pendingKeyUp = press.keyCode }
       // Deferred: work that ends the mode tears this tap down; never do that inside its callout.
       Task { @MainActor [weak self] in self?.onKey?(press) }
+    case .keyUp:
+      // Only the release of the reported ⌘V key, by keycode alone: ⌘ is often released first.
+      let keyCode = UInt16(truncatingIfNeeded: event.getIntegerValueField(.keyboardEventKeycode))
+      guard onKey != nil, let pending = pendingKeyUp, keyCode == pending,
+            event.getIntegerValueField(.eventSourceUnixProcessID) != Int64(getpid()) else { return }
+      pendingKeyUp = nil
+      let release = PasteStackKeyPress(keyCode: keyCode, modifiers: [], isKeyUp: true)
+      Task { @MainActor [weak self] in self?.onKey?(release) }
     default:
       break
     }

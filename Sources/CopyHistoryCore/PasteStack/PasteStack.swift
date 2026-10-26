@@ -186,19 +186,24 @@ public struct PasteStackKeyPress: Equatable, Sendable {
   public var isAutorepeat: Bool
   /// Synthesized by this app (e.g. the popup's own ⌘V), which must never advance the stack.
   public var fromOwnProcess: Bool
+  /// The release of a key whose ⌘V press was reported (see `PasteKeyMonitoring.reportsKeyUp`);
+  /// its modifiers may already be up. `action` is `.ignore` for it.
+  public var isKeyUp: Bool
 
   public init(keyCode: UInt16, modifiers: Modifiers, character: String? = nil,
-              isAutorepeat: Bool = false, fromOwnProcess: Bool = false) {
+              isAutorepeat: Bool = false, fromOwnProcess: Bool = false, isKeyUp: Bool = false) {
     self.keyCode = keyCode; self.modifiers = modifiers; self.character = character
-    self.isAutorepeat = isAutorepeat; self.fromOwnProcess = fromOwnProcess
+    self.isAutorepeat = isAutorepeat; self.fromOwnProcess = fromOwnProcess; self.isKeyUp = isKeyUp
   }
 
   /// Exactly ⌘V (⇧⌘V and ⌥⌘V are other shortcuts), matched by the character the layout types, so
-  /// ⌘K on Dvorak (keycode 9) never counts. No other key, Esc included, does anything: a stray Esc
-  /// dismissing an autocomplete list must not throw the queue away.
+  /// ⌘K on Dvorak (keycode 9) never counts. A character that is not ASCII says nothing about ⌘V
+  /// (a layout that types its native letter under ⌘), so the keycode decides. No other key, Esc
+  /// included, does anything: a stray Esc dismissing an autocomplete list must not throw the queue away.
   public var action: Action {
-    guard !isAutorepeat, modifiers == .command else { return .ignore }
-    let isV = character.map { $0.lowercased() == "v" } ?? (keyCode == Self.vKeyCode)
+    guard !isKeyUp, !isAutorepeat, modifiers == .command else { return .ignore }
+    let latin = character.flatMap { KeyboardLayoutCharacter.isASCII($0) ? $0 : nil }
+    let isV = latin.map { $0.lowercased() == "v" } ?? (keyCode == Self.vKeyCode)
     guard isV else { return .ignore }
     return fromOwnProcess ? .ownPaste : .paste
   }

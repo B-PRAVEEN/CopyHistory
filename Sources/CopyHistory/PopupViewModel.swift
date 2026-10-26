@@ -100,6 +100,21 @@ final class PopupViewModel: ObservableObject {
     PopupPolicy.ocrSnippet(for: entry, detector: services.detector)
   }
 
+  /// Tooltip for an image row whose pixels are hidden (flagged, or never checked for secrets).
+  func hiddenThumbnailHelp(for entry: ClipboardEntry) -> String? {
+    guard entry.kind == .image else { return nil }
+    // Other stores cannot say whether the image was scanned: fail closed.
+    let unscanned = historyStore?.isUnscannedImage(entry.id) ?? true
+    return PopupPolicy.hiddenThumbnailHelp(for: entry, unscanned: unscanned)
+  }
+
+  /// A warning shown on the row, e.g. a saved pin flagged later (it is kept on disk until unpinned).
+  func rowNote(for entry: ClipboardEntry) -> String? {
+    guard entry.kind == .image, entry.pinned, !entry.findings.isEmpty,
+          historyStore?.flaggedPinsKeptOnDisk.contains(entry.id) == true else { return nil }
+    return PopupPolicy.flaggedPinKeptOnDiskNote
+  }
+
   /// Whether ⇧⌘↩ has text to paste for the selected entry (drives the footer hint).
   var selectedHasOCRText: Bool { selectedEntry.flatMap(PopupPolicy.ocrText(of:)) != nil }
 
@@ -107,39 +122,27 @@ final class PopupViewModel: ObservableObject {
 
   /// Returns true when the event was consumed.
   func handleKey(keyCode: UInt16, flags: NSEvent.ModifierFlags, characters: String?) -> Bool {
-    let mods = flags.intersection([.command, .option, .shift, .control])
-    let cmd = mods == .command
-    switch Int(keyCode) {
-    case 53:  // Escape
-      if mode == .transforms { leaveTransforms() } else { onClose() }
-      return true
-    case 125:  // Down
-      move(1); return true
-    case 126:  // Up
-      move(-1); return true
-    case 36, 76:  // Return / Enter
-      if mode == .transforms { applySelectedTransform(); return true }
-      if mods == .option { copyOnly(); return true }
-      if mods.isEmpty { pasteSelected(flipPlain: false); return true }
-      if mods == .shift { pasteSelected(flipPlain: true); return true }
-      if mods == [.command, .shift] { pasteSelectedOCRText(); return true }
-      return false
-    case 48 where mods.isEmpty:  // Tab
-      if mode == .transforms { leaveTransforms() } else { openTransforms() }
-      return true
-    case 35 where cmd && mode == .list:  // Cmd+P
-      togglePinSelected(); return true
-    case 51 where cmd && mode == .list:  // Cmd+Delete
-      deleteSelected(); return true
-    default:
-      break
+    var mods: PopupKeyMap.Modifiers = []
+    if flags.contains(.command) { mods.insert(.command) }
+    if flags.contains(.option) { mods.insert(.option) }
+    if flags.contains(.shift) { mods.insert(.shift) }
+    if flags.contains(.control) { mods.insert(.control) }
+    guard let command = PopupKeyMap.command(keyCode: keyCode, modifiers: mods, characters: characters,
+                                            mode: mode == .transforms ? .transforms : .list) else { return false }
+    switch command {
+    case .close: onClose()
+    case .leaveTransforms: leaveTransforms()
+    case .move(let delta): move(delta)
+    case .applyTransform: applySelectedTransform()
+    case .copyOnly: copyOnly()
+    case .paste(let flipPlain): pasteSelected(flipPlain: flipPlain)
+    case .pasteOCRText: pasteSelectedOCRText()
+    case .openTransforms: openTransforms()
+    case .togglePin: togglePinSelected()
+    case .delete: deleteSelected()
+    case .pasteItem(let index, let flipPlain): pasteItem(at: index, flipPlain: flipPlain)
     }
-    if mode == .list, mods == .command || mods == [.command, .option],
-       let ch = characters, let n = Int(ch), (1...9).contains(n) {
-      pasteItem(at: n - 1, flipPlain: mods.contains(.option))
-      return true
-    }
-    return false
+    return true
   }
 
   private func move(_ delta: Int) {

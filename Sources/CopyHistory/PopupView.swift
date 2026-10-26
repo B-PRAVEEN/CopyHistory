@@ -41,6 +41,7 @@ struct PopupView: View {
           }
           ForEach(Array(vm.items.enumerated()), id: \.element.id) { index, entry in
             EntryRow(entry: entry, text: vm.displayText(for: entry), ocrSnippet: vm.ocrSnippet(for: entry),
+                     hiddenThumbnailHelp: vm.hiddenThumbnailHelp(for: entry), note: vm.rowNote(for: entry),
                      index: index, selected: index == vm.selection)
               .id(entry.id)
               .contentShape(Rectangle())
@@ -107,6 +108,8 @@ private struct EntryRow: View {
   let entry: ClipboardEntry
   let text: String
   let ocrSnippet: String?  // already masked when the entry is flagged
+  let hiddenThumbnailHelp: String?  // set when the image's pixels must not be shown
+  let note: String?
   let index: Int
   let selected: Bool
 
@@ -118,8 +121,13 @@ private struct EntryRow: View {
         Image(systemName: "checkmark.shield.fill").frame(width: 18).foregroundStyle(.orange)
           .help("Contains sensitive data — shown masked")
       }
-      if entry.kind == .image, let data = entry.imagePNG, let image = NSImage(data: data) {
-        Image(nsImage: image).resizable().scaledToFit().frame(height: 28)
+      if entry.kind == .image, let data = entry.imagePNG {
+        if let hiddenThumbnailHelp {
+          Image(systemName: "eye.slash").frame(width: 28, height: 28).foregroundStyle(.secondary)
+            .help(hiddenThumbnailHelp)
+        } else if let image = NSImage(data: data) {
+          Image(nsImage: image).resizable().scaledToFit().frame(height: 28)
+        }
         if let ocrSnippet {
           Text("TEXT").font(.caption2.weight(.semibold))
             .padding(.horizontal, 4).padding(.vertical, 1)
@@ -132,6 +140,9 @@ private struct EntryRow: View {
         Text(text).lineLimit(1).truncationMode(.tail)
       }
       Spacer(minLength: 8)
+      if let note {
+        Image(systemName: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange).help(note)
+      }
       if entry.pinned { Image(systemName: "pin.fill").font(.caption).foregroundStyle(.secondary) }
       if index < 9 { Text("⌘\(index + 1)").font(.caption).foregroundStyle(.tertiary) }
     }

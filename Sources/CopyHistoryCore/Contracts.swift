@@ -59,7 +59,27 @@ public protocol Transform: Sendable {
 
 /// Worker B provides the registry; Worker C reads it to build the Tab picker.
 public enum TransformRegistry {
-  public nonisolated(unsafe) static var all: [any Transform] = []
+  /// Lock-guarded, so it may be read and written from any thread.
+  public static var all: [any Transform] {
+    get { storage.withLock { $0 } }
+    set { storage.withLock { $0 = newValue } }
+  }
+
+  /// Read-modify-write of `all` as one step.
+  static func update(_ body: (inout [any Transform]) -> Void) { storage.withLock { body(&$0) } }
+
+  private static let storage = Locked<[any Transform]>([])
+}
+
+/// A value guarded by a lock.
+final class Locked<Value>: @unchecked Sendable {
+  private let lock = NSLock()
+  private var value: Value
+  init(_ value: Value) { self.value = value }
+  func withLock<R>(_ body: (inout Value) throws -> R) rethrows -> R {
+    lock.lock(); defer { lock.unlock() }
+    return try body(&value)
+  }
 }
 
 /// Worker A implements; Worker C consumes.

@@ -16,6 +16,6 @@ extension TransformRegistry {
   public static func registerDefaults() {
     let defaults = defaultTransforms
     let ids = Set(defaults.map(\.id))
-    all = all.filter { !ids.contains($0.id) } + defaults
+    update { all in all = all.filter { !ids.contains($0.id) } + defaults }
   }
 }

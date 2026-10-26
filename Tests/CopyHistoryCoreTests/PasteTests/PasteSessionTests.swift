@@ -69,13 +69,25 @@ private func flagged(_ text: String) -> ClipboardEntry {
 // MARK: F1 / app M8 — hiding cancels; F2 / app H5 — transform output of a flagged entry
 
 @MainActor @Suite struct TransformSessionTests {
-  @Test func deliversOutcomeForUncancelledRun() async throws {
+  /// Awaits the completion itself rather than sleeping a fixed time, so a loaded machine cannot
+  /// make it fail; the time limit turns a run that never delivers into a failure, not a hang.
+  @Test(.timeLimit(.minutes(1))) func deliversOutcomeForUncancelledRun() async throws {
     let session = TransformSession(runner: slowRunner(.milliseconds(20)))
     var outcomes: [TransformOutcome] = []
     let entry = ClipboardEntry(kind: .text, text: "abc")
-    #expect(session.start(EchoTransform(), on: entry) { outcomes.append($0) })
-    #expect(session.isRunning)
-    try await Task.sleep(for: .milliseconds(300))
+    var delivered: CheckedContinuation<Void, Never>?
+    var started = false
+    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+      delivered = continuation
+      started = session.start(EchoTransform(), on: entry) {
+        outcomes.append($0)
+        delivered?.resume()
+        delivered = nil
+      }
+      #expect(session.isRunning == started)
+      if !started { delivered?.resume(); delivered = nil }
+    }
+    #expect(started)
     #expect(outcomes.count == 1)
     #expect(outcomes.first?.entryID == entry.id)
     #expect(try outcomes.first?.result.get() == "late output")

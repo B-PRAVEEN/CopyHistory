@@ -104,10 +104,14 @@ enum OCRText {
 }
 
 /// Runs a recogniser with a hard deadline that does not depend on it cooperating: the caller gets
-/// `.failed` once `seconds` have passed, even if the recogniser never returns.
+/// `.failed` once `seconds` have passed, even if the recogniser never returns. Budgets over
+/// `maxSeconds` are clamped; zero, negative and NaN budgets fail at once.
 enum OCRDeadline {
+  static let maxSeconds: TimeInterval = 3600
+
   static func scan(_ ocr: any OCRRecognizing, png: Data, within seconds: TimeInterval) async -> OCRScanResult {
-    guard seconds > 0 else { return .failed }
+    guard seconds > 0 else { return .failed }  // also false for NaN
+    let budget = min(seconds, maxSeconds)
     let gate = Gate()
     return await withCheckedContinuation { (cont: CheckedContinuation<OCRScanResult, Never>) in
       gate.set(cont)
@@ -122,7 +126,7 @@ enum OCRDeadline {
         gate.resume(result)
       }
       let timer = Task.detached(priority: .utility) {
-        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+        try? await Task.sleep(for: .seconds(budget))
         work.cancel()
         gate.resume(.failed)
       }

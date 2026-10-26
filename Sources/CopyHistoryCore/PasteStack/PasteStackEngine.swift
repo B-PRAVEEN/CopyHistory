@@ -7,6 +7,13 @@ public protocol PasteKeyMonitoring: AnyObject {
   /// (Input Monitoring denied, tap creation failed); the stack then advances via the fallback hotkey.
   func start(onKey: @escaping @MainActor (PasteStackKeyPress) -> Void) -> Bool
   func stop()
+  /// Whether the release of each reported ⌘V is delivered too (`PasteStackKeyPress.isKeyUp`). Then
+  /// the stack advances `advanceDelay` after the key-up rather than after the key-down.
+  var reportsKeyUp: Bool { get }
+}
+
+extension PasteKeyMonitoring {
+  public var reportsKeyUp: Bool { false }
 }
 
 /// Puts stack entries on the pasteboard.
@@ -87,8 +94,12 @@ public final class PasteStackPasteboardWriter: PasteStackWriting {
 /// The Paste Stack state machine, free of AppKit so it is unit-testable.
 ///
 /// While active the pasteboard holds the queue head. ⌘V (seen by a listen-only key monitor) pastes
-/// it; `advanceDelay` later — time for the target app to read the pasteboard — the head is popped and
-/// the next entry written. Presses inside that window restart it, so a double-tap advances once.
+/// it; `advanceDelay` after the key is released (after the press, for a monitor that does not report
+/// releases) — time for the target app to read the pasteboard — the head is popped and the next
+/// entry written. Presses inside that window restart it, so a double-tap advances once. A release
+/// that never arrives (e.g. the tap was disabled mid-press) advances after `keyUpTimeout`.
+/// A target that reads the pasteboard later than that (a remote desktop, a stalled app) can still
+/// get the next entry.
 /// When the last entry has been pasted the mode ends (`.finished`); `cancel()` ends it early.
 ///
 /// The head never replaces a copy the stack has not queued: a copy is on the pasteboard first, and
@@ -110,8 +121,10 @@ public final class PasteStackEngine {
     case ended(EndReason)
   }
 
-  /// ~120 ms: long enough for the target app to read the pasteboard after ⌘V.
-  public static let defaultAdvanceDelay: TimeInterval = 0.12
+  /// ~250 ms after the key-up: long enough for a busy target app to read the pasteboard after ⌘V.
+  public static let defaultAdvanceDelay: TimeInterval = 0.25
+  /// How long after a ⌘V press the stack advances anyway when its release is never reported.
+  public static let keyUpTimeout: TimeInterval = 1
   /// A flagged head can wait on the pasteboard this long before it is cleared. After a clear the
   /// next ⌘V pastes nothing, and the stack re-writes the head instead of advancing.
   public static let secretHoldSeconds: TimeInterval = 120
@@ -141,6 +154,8 @@ public final class PasteStackEngine {
   private var generation = 0
   /// Whether any ⌘V since the last advance found the head on the pasteboard, i.e. pasted it.
   private var pastedHeadSinceAdvance = false
+  /// Keycode of the ⌘V press whose release the advance waits for.
+  private var awaitingKeyUp: UInt16?
   /// `writer.changeCount` right after the last head write; nil when no head is on the pasteboard.
   private var headChangeCount: Int?
   /// Image entries whose OCR result has not arrived yet; only their results are accepted.
@@ -175,6 +190,7 @@ public final class PasteStackEngine {
     generation += 1
     headChangeCount = nil
     pastedHeadSinceAdvance = false
+    awaitingKeyUp = nil
     lastRejection = nil
     awaitingOCR = []
     scannedImages = []
@@ -243,18 +259,25 @@ public final class PasteStackEngine {
   /// Entry point for the key monitor.
   public func handle(_ key: PasteStackKeyPress) {
     guard stack.isActive else { return }
+    if key.isKeyUp {
+      guard advanceMode == .commandV, !key.fromOwnProcess, let pending = awaitingKeyUp,
+            key.keyCode == pending else { return }
+      awaitingKeyUp = nil
+      generation += 1
+      scheduleAdvance(after: advanceDelay)
+      return
+    }
     switch key.action {
     case .paste:
       guard advanceMode == .commandV else { return }
       // Decided now: by the time the advance runs the user may have copied something new.
       if isHeadOnPasteboard { pastedHeadSinceAdvance = true }
       generation += 1
-      let current = generation
-      schedule(advanceDelay) { [weak self] in
-        guard let self, current == self.generation else { return }
-        let pastedHead = self.pastedHeadSinceAdvance
-        self.pastedHeadSinceAdvance = false
-        self.advance(pastedHead: pastedHead)
+      if keyMonitor?.reportsKeyUp == true {
+        awaitingKeyUp = key.keyCode
+        scheduleAdvance(after: Self.keyUpTimeout)  // only if the release is lost
+      } else {
+        scheduleAdvance(after: advanceDelay)
       }
     case .ownPaste:
       // The popup wrote its item and pasted it. Once the target has read it, put the head back so the
@@ -267,6 +290,18 @@ public final class PasteStackEngine {
       }
     case .ignore:
       break
+    }
+  }
+
+  /// Runs the advance `delay` from now unless another ⌘V press or release comes first.
+  private func scheduleAdvance(after delay: TimeInterval) {
+    let current = generation
+    schedule(delay) { [weak self] in
+      guard let self, current == self.generation else { return }
+      let pastedHead = self.pastedHeadSinceAdvance
+      self.pastedHeadSinceAdvance = false
+      self.awaitingKeyUp = nil
+      self.advance(pastedHead: pastedHead)
     }
   }
 
@@ -367,6 +402,7 @@ public final class PasteStackEngine {
     guard stack.isActive else { return }
     generation += 1
     headChangeCount = nil
+    awaitingKeyUp = nil
     awaitingOCR = []
     scannedImages = []
     stack.stop()

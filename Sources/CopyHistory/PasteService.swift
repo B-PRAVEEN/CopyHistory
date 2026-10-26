@@ -8,10 +8,6 @@ import CopyHistoryCore
 final class PasteService {
   /// Marker type added to every pasteboard write we make, so the clipboard monitor can skip them.
   static let internalType = NSPasteboard.PasteboardType(SecretPasteboardWriter.internalType)
-  /// After an auto-paste, a secret only needs to survive until the target app has read it.
-  static let secretClearAfterPaste: TimeInterval = 2
-  /// After copy-only (or paste without Accessibility) the user pastes by hand, so allow longer.
-  static let secretClearAfterCopy: TimeInterval = 30
   /// Posted on the main thread after a paste's synthetic ⌘V has been queued, so the Paste Stack
   /// can put its head back (review L1). Delivery to the target app is asynchronous: observers must
   /// wait past the target's paste before rewriting the pasteboard. Not posted for copy-only.
@@ -33,10 +29,10 @@ final class PasteService {
   var hasPasteTarget: Bool { previousApp?.isTerminated == false }
 
   /// Writes to the pasteboard. Secrets (`sensitive`, or detected by scanning the text when nil) are
-  /// marked Concealed/Transient, kept off Universal Clipboard and cleared after `secretClearAfterCopy`.
+  /// marked Concealed/Transient, kept off Universal Clipboard and cleared after `PastePolicy.secretClearAfterCopy`.
   /// Images are only marked when `sensitive` is true (an image flagged through its recognised text).
   func copy(_ content: PasteContent, sensitive: Bool? = nil) {
-    write(content, sensitive: sensitive, clearAfter: Self.secretClearAfterCopy)
+    write(content, sensitive: sensitive, clearAfter: PastePolicy.clearAfter(.copyOnly))
   }
 
   /// Copies, then pastes into the previous app. Falls back to copy-only without Accessibility or
@@ -47,10 +43,10 @@ final class PasteService {
     let route = PastePolicy.route(hasTarget: target != nil,
                                   accessibilityTrusted: target != nil && ensureAccessibility())
     guard route == .paste, let target else {
-      write(content, sensitive: sensitive, clearAfter: Self.secretClearAfterCopy)
+      write(content, sensitive: sensitive, clearAfter: PastePolicy.clearAfter(.copyOnly))
       return .copyOnly
     }
-    write(content, sensitive: sensitive, clearAfter: Self.secretClearAfterPaste)
+    write(content, sensitive: sensitive, clearAfter: PastePolicy.clearAfter(.paste))
     if !target.isActive { target.activate() }
     Task { @MainActor in
       // Post ⌘V only once the target is frontmost; if activation did not happen (the user switched
@@ -70,9 +66,10 @@ final class PasteService {
   }
 
   private func write(_ content: PasteContent, sensitive: Bool?, clearAfter: TimeInterval) {
+    let marked = PastePolicy.writerSensitivity(for: content, sensitive: sensitive)
     switch content {
-    case .text(let s): writer.write(text: s, sensitive: sensitive, clearAfter: clearAfter)
-    case .image(let d): writer.write(png: d, sensitive: sensitive == true, clearAfter: clearAfter)
+    case .text(let s): writer.write(text: s, sensitive: marked, clearAfter: clearAfter)
+    case .image(let d): writer.write(png: d, sensitive: marked == true, clearAfter: clearAfter)
     }
   }
 

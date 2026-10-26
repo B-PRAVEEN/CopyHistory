@@ -44,9 +44,15 @@ import Foundation
 /// the vault restore confirms it is flagged, and is gone after the next relaunch. The one exception
 /// is a legacy pinned image whose vault item exists but cannot be read (e.g. Keychain access
 /// denied): it is treated as sensitive (an empty-range finding, so it pastes Concealed and is
-/// masked) but its files are left exactly as they are, because only a user action may destroy a
-/// pin whose vault item is unreadable. When the vault cannot even be listed, nobody can tell which
-/// pins were flagged, so they are left alone.
+/// masked) but its files are kept (a legacy inline PNG is moved to `images/`), because only a user
+/// action may destroy a pin whose vault item is unreadable. When the vault cannot even be listed,
+/// nobody can tell which pins were flagged, so they are left alone. Likewise a pinned image already
+/// on disk that a later scan flags (e.g. a re-copy whose OCR now reads a "secret") is flagged in
+/// memory, but its files stay until the user unpins it (`flaggedPinsKeptOnDisk`); the new OCR text
+/// is written masked. Its id (and nothing else) is listed in `history.flagged-pins.json`, so after a
+/// relaunch it loads flagged again (an empty-range finding, like the unreadable-vault case). A side
+/// file that exists but cannot be read or decoded fails closed: every pinned image loaded from disk
+/// is then treated as such a pin, flagged with its files kept.
 ///
 /// Persistence: mutations only mark the store dirty when something actually changed; writes are
 /// coalesced on a background queue, and are skipped when the encoded bytes are unchanged. Images
@@ -79,13 +85,24 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
   // Guarded by `lock`.
   /// Image entries that may be written to disk: scanned with no secret found, or loaded from disk.
   private var scannedImages: Set<UUID> = []
+  /// Pinned images that were cleared for disk and later flagged by a scan: their files are kept.
+  private var keptFlaggedPins: Set<UUID> = []
+  /// Those of `keptFlaggedPins` whose record and PNG are on disk: loaded flagged at launch, then
+  /// as the last write kept them.
+  private var keptFlaggedPinsOnDisk: Set<UUID> = []
   private var generation = 0
   private var saveScheduled = false
+  /// The debounced save, cancelled when a write makes it redundant and on deinit.
+  private var saveWork: DispatchWorkItem?
 
   // Only touched on `ioQueue`.
   private var writtenGeneration = 0
   private var lastWrittenJSON: Data?
   private var writtenImageIDs: Set<UUID> = []
+  /// Every image loaded from disk (in `images/` or inline in a legacy file). Set in `init`.
+  private var loadedImageIDs: Set<UUID> = []
+  /// The ids `history.flagged-pins.json` holds; nil when it is unreadable and must be rewritten.
+  private var writtenFlaggedPins: Set<UUID>? = []
   private var vaultedIDs: Set<UUID> = []
   /// Vault items that only a user action may delete: pins whose vault read failed at load (e.g.
   /// Keychain access denied after a re-sign). Set by `restoreVault`, then read on `ioQueue`.
@@ -150,6 +167,18 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
       items = loaded.items
       // Already on disk, so already through this rule (or from before OCR existed).
       scannedImages = Set(items.lazy.filter { $0.kind == .image }.map(\.id))
+      // Saved pins a later scan flagged load flagged again; an unreadable list fails closed.
+      let listed = Self.readFlaggedPins(next: fileURL)
+      writtenFlaggedPins = listed
+      let pinnedImages = Set(items.lazy.filter { $0.pinned && $0.kind == .image && $0.findings.isEmpty }.map(\.id))
+      let flagged = listed.map { $0.intersection(pinnedImages) } ?? pinnedImages
+      for i in items.indices where flagged.contains(items[i].id) {
+        let end = items[i].ocrText?.count ?? 0
+        items[i].findings = [SecretFinding(category: .genericSecret, range: end..<end)]
+      }
+      scannedImages.subtract(flagged)
+      keptFlaggedPins = flagged
+      keptFlaggedPinsOnDisk = flagged
       let before = items.count
       items.removeAll { Self.isExpired($0, at: now()) }
       // Scrub legacy plaintext secrets / expired rows / inline images right away.
@@ -189,6 +218,7 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
 
   deinit {
     purgeTimer?.cancel()
+    lock.lock(); saveWork?.cancel(); saveWork = nil; lock.unlock()
     if let terminateObserver { NotificationCenter.default.removeObserver(terminateObserver) }
     flush()
   }
@@ -264,6 +294,8 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
       if let text = update.ocrText { e.ocrText = text }
       e.findings = update.findings
       if !e.pinned { e.expiresAt = update.expiresAt }
+      // A pin that was cleared for disk keeps its files until the user unpins it (see the class doc).
+      if e.pinned, scannedImages.contains(e.id) { keptFlaggedPins.insert(e.id) }
       scannedImages.remove(e.id)
       changed = true
     } else if update.scanned {
@@ -292,10 +324,22 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
     return (e, e.kind == .image && e.findings.isEmpty && !scannedImages.contains(id))
   }
 
+  /// Pinned images flagged by a scan after they were saved: flagged (masked, pasted concealed), also
+  /// after a relaunch, and their files stay on disk until unpinned. Only ids whose files are on disk:
+  /// loaded flagged at launch, or kept by a write (never one whose PNG was not written yet, nor on a
+  /// read-only store). The UI can say so.
+  public var flaggedPinsKeptOnDisk: Set<UUID> { lock.lock(); defer { lock.unlock() }; return keptFlaggedPinsOnDisk }
+
   public func togglePin(_ id: UUID) {
     mutate { items in
       if let i = items.firstIndex(where: { $0.id == id }) { items[i].pinned.toggle() }
     }
+    lock.lock()
+    if items.first(where: { $0.id == id })?.pinned != true {
+      keptFlaggedPins.remove(id)
+      keptFlaggedPinsOnDisk.remove(id)
+    }
+    lock.unlock()
     lock.lock(); let before = items.count; trimToCap(); if items.count != before { markDirty() }; lock.unlock()
   }
 
@@ -330,8 +374,13 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
     generation += 1
     guard !saveScheduled else { return }
     saveScheduled = true
-    ioQueue.asyncAfter(deadline: .now() + saveDelay) { [weak self] in self?.writePending() }
+    let work = DispatchWorkItem { [weak self] in self?.writePending() }
+    saveWork = work
+    ioQueue.asyncAfter(deadline: .now() + saveDelay, execute: work)
   }
+
+  /// The pending debounced save, if any (for tests).
+  var scheduledSave: DispatchWorkItem? { lock.lock(); defer { lock.unlock() }; return saveWork }
 
   private static func isExpired(_ e: ClipboardEntry, at date: Date) -> Bool {
     !e.pinned && (e.expiresAt.map { $0 <= date } ?? false)
@@ -352,13 +401,21 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
 
   /// The on-disk form of an entry: no image bytes, and no plaintext for flagged entries. nil means
   /// memory only, which for an image also keeps its PNG off disk. `scanned`: the image may be written.
+  /// `keptFlagged`: a pinned image flagged after it was saved (see `flaggedPinsKeptOnDisk`).
   /// Runs on `ioQueue`.
-  private func diskRecord(_ e: ClipboardEntry, scanned: Bool) -> ClipboardEntry? {
+  private func diskRecord(_ e: ClipboardEntry, scanned: Bool, keptFlagged: Bool = false) -> ClipboardEntry? {
     var r = e
     r.imagePNG = nil
     if e.kind == .image {
-      // A pinned legacy image whose vault item is unreadable: sensitive in memory, its files untouched.
-      if e.pinned, unreadableVaultIDs.contains(e.id), writtenImageIDs.contains(e.id) {
+      // A pinned legacy image whose vault item is unreadable: sensitive in memory, its files kept.
+      // Only ids loaded from disk are here; a legacy inline PNG is written to `images/` now.
+      if e.pinned, unreadableVaultIDs.contains(e.id) {
+        r.findings = []; r.expiresAt = nil
+        return r
+      }
+      // A saved pin a later scan flagged: its files stay until unpinned, its OCR text only masked.
+      if e.pinned, keptFlagged, writtenImageIDs.contains(e.id) || loadedImageIDs.contains(e.id) {
+        r.ocrText = e.ocrText.map { masked(detector.mask($0, findings: e.findings)) }
         r.findings = []; r.expiresAt = nil
         return r
       }
@@ -373,20 +430,30 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
     return r
   }
 
+  /// `text` with anything the detector still finds masked too (fail closed).
+  private func masked(_ text: String) -> String {
+    let missed = detector.scan(text)
+    return missed.isEmpty ? text : detector.mask(text, findings: missed)
+  }
+
   /// Runs on `ioQueue`.
   private func writePending() {
     lock.lock()
     saveScheduled = false
+    saveWork?.cancel()  // this write covers it
+    saveWork = nil
     let gen = generation
     let live = Set(items.lazy.filter { $0.kind == .image }.map(\.id))
     scannedImages.formIntersection(live)
+    keptFlaggedPins.formIntersection(live)
     let scanned = scannedImages
+    let keptFlagged = keptFlaggedPins
     let snapshot = items
     lock.unlock()
     guard let fileURL, gen != writtenGeneration, !writesBlocked else { return }
     // What reaches disk: never an image without a clean scan, a flagged image, or an unpinned secret.
     let records = snapshot.compactMap { e in
-      diskRecord(e, scanned: scanned.contains(e.id)).map { (entry: e, record: $0) }
+      diskRecord(e, scanned: scanned.contains(e.id), keptFlagged: keptFlagged.contains(e.id)).map { (entry: e, record: $0) }
     }
 
     let fm = FileManager.default
@@ -419,6 +486,15 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
     }
     lock.lock(); _pinsNotSavedToVault = notSaved; lock.unlock()
 
+    // Kept flagged pins are listed before the JSON holds their masked record, and leave the list
+    // only after it no longer does, so a relaunch never loads one unflagged.
+    let keptOnDisk = keptFlagged.filter { id in writtenImageIDs.contains(id) && records.contains { $0.entry.id == id } }
+    if writtenFlaggedPins.map({ !keptOnDisk.isSubset(of: $0) }) ?? true {
+      let listed = keptOnDisk.union(writtenFlaggedPins ?? [])
+      guard Self.writeFlaggedPins(listed, next: fileURL) else { return }
+      writtenFlaggedPins = listed
+    }
+
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .iso8601
     guard let data = try? encoder.encode(records.map(\.record)) else { return }
@@ -427,6 +503,8 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
       lastWrittenJSON = data
     }
     writtenGeneration = gen
+    if writtenFlaggedPins != keptOnDisk, Self.writeFlaggedPins(keptOnDisk, next: fileURL) { writtenFlaggedPins = keptOnDisk }
+    lock.lock(); keptFlaggedPinsOnDisk = keptOnDisk.intersection(keptFlaggedPins); lock.unlock()
 
     // Unpinned, removed or cleared secrets leave the vault once the JSON no longer lists them as pins.
     if let vault, vaultRemovalsAllowed {
@@ -485,6 +563,7 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
       for r in records {
         guard var e = r.entry else { lostRecords = true; continue }
         loaded.decodedIDs.insert(e.id)
+        if e.kind == .image { loadedImageIDs.insert(e.id) }
         if e.kind == .image, e.imagePNG == nil {
           guard let url = imageURL(e.id), let png = try? Data(contentsOf: url) else { lostRecords = true; continue }
           e.imagePNG = png
@@ -596,6 +675,32 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
       return !FileManager.default.fileExists(atPath: file.path)
     }
     guard let data = try? JSONEncoder().encode(map.mapValues { $0.map(\.uuidString).sorted() }) else { return false }
+    return writePrivate(data, to: file)
+  }
+
+  // MARK: - Kept flagged pins (ids only: no text, findings or image data)
+
+  private static func flaggedPinsURL(next url: URL) -> URL {
+    url.deletingLastPathComponent().appendingPathComponent("history.flagged-pins.json")
+  }
+
+  /// The listed ids; empty when there is no file, nil when it exists but cannot be read or holds
+  /// anything but ids (the caller fails closed).
+  private static func readFlaggedPins(next url: URL) -> Set<UUID>? {
+    let data: Data
+    do { data = try Data(contentsOf: flaggedPinsURL(next: url)) } catch { return isNoSuchFile(error) ? [] : nil }
+    guard let raw = try? JSONDecoder().decode([String].self, from: data) else { return nil }
+    let ids = raw.compactMap(UUID.init(uuidString:))
+    return ids.count == raw.count ? Set(ids) : nil
+  }
+
+  private static func writeFlaggedPins(_ ids: Set<UUID>, next url: URL) -> Bool {
+    let file = flaggedPinsURL(next: url)
+    guard !ids.isEmpty else {
+      try? FileManager.default.removeItem(at: file)
+      return !FileManager.default.fileExists(atPath: file.path)
+    }
+    guard let data = try? JSONEncoder().encode(ids.map(\.uuidString).sorted()) else { return false }
     return writePrivate(data, to: file)
   }
 

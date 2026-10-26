@@ -28,6 +28,25 @@ public enum PastePolicy {
     return targetPID == frontmostPID
   }
 
+  /// After an auto-paste, a secret only needs to survive until the target app has read it.
+  public static let secretClearAfterPaste: TimeInterval = 2
+  /// After copy-only (or paste without Accessibility) the user pastes by hand, so allow longer.
+  public static let secretClearAfterCopy: TimeInterval = 30
+
+  /// How long a secret written for `route` stays on the pasteboard.
+  public static func clearAfter(_ route: PasteRoute) -> TimeInterval {
+    route == .paste ? secretClearAfterPaste : secretClearAfterCopy
+  }
+
+  /// The writer's `sensitive` argument for `content`: text passes it through (nil lets the writer
+  /// scan the text); an image cannot be scanned there, so it is marked only when `sensitive` is true.
+  public static func writerSensitivity(for content: PasteContent, sensitive: Bool?) -> Bool? {
+    switch content {
+    case .text: return sensitive
+    case .image: return sensitive == true
+    }
+  }
+
   /// The `sensitive` argument for the pasteboard writer when writing `entry`, or anything derived
   /// from it: true for a flagged entry, so the decision never depends on re-scanning the written
   /// text (a transform can turn a detected secret into undetectable output); nil lets the writer scan.

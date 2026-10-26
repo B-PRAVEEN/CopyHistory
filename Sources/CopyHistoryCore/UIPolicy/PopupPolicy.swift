@@ -36,6 +36,22 @@ public enum PopupPolicy {
   public static let unscannedImageMessage = "Not checked for secrets yet, so it was copied as concealed and is cleared from the clipboard shortly. Press ⌘V where you want it."
   public static let unscannedImagePastedMessage = "Pasted as concealed: this image was not checked for secrets, so it is cleared from the clipboard in a moment."
 
+  public static let hiddenFlaggedThumbnailHelp = "Preview hidden: this image shows sensitive data"
+  public static let hiddenUnscannedThumbnailHelp = "Preview hidden: this image has not been checked for secrets"
+  public static let flaggedPinKeptOnDiskNote = "A later scan found sensitive text in this pinned image. It stays saved, and flagged after a relaunch, until you unpin it; unpinning removes it from disk."
+
+  /// Whether an image row may show its pixels as a thumbnail: not when flagged (a small cropped
+  /// key is legible at row size) or `unscanned` (see `HistoryStore.isUnscannedImage`).
+  public static func showsThumbnail(of entry: ClipboardEntry, unscanned: Bool) -> Bool {
+    entry.kind == .image && entry.findings.isEmpty && !unscanned
+  }
+
+  /// Tooltip for a row whose thumbnail is hidden; nil when it is shown or the entry is not an image.
+  public static func hiddenThumbnailHelp(for entry: ClipboardEntry, unscanned: Bool) -> String? {
+    guard entry.kind == .image, !showsThumbnail(of: entry, unscanned: unscanned) else { return nil }
+    return entry.findings.isEmpty ? hiddenUnscannedThumbnailHelp : hiddenFlaggedThumbnailHelp
+  }
+
   /// The recognised text of an image entry, if any (whitespace-only counts as none).
   public static func ocrText(of entry: ClipboardEntry) -> String? {
     guard entry.kind == .image, let text = entry.ocrText,

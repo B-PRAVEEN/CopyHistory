@@ -24,12 +24,23 @@ public enum KeyboardLayoutCharacter {
   }
 
   /// The character `keyCode` types with ⌘ in the active layout. Input methods without layout data
-  /// (Japanese, Chinese, …) use the ASCII-capable layout macOS falls back to for shortcuts.
-  /// Call on the main thread (Text Input Sources requirement).
+  /// (Japanese, Chinese, …) use the ASCII-capable layout macOS falls back to for shortcuts, and so
+  /// does a layout whose ⌘ character is not ASCII (e.g. "м" in some third-party Cyrillic layouts),
+  /// as AppKit does for key equivalents. Call on the main thread (Text Input Sources requirement).
   public static func currentCommandCharacter(forKeyCode keyCode: UInt16) -> String? {
-    guard let layout = currentLayoutData() else { return nil }
-    return character(forKeyCode: keyCode, layout: layout)
+    commandCharacter(primary: currentLayoutData().flatMap { character(forKeyCode: keyCode, layout: $0) },
+                     asciiCapable: { asciiCapableLayoutData().flatMap { character(forKeyCode: keyCode, layout: $0) } })
   }
+
+  /// `primary` if it is ASCII, else the ASCII-capable layout's character if that is, else nil (the
+  /// caller then falls back to the QWERTY keycode).
+  static func commandCharacter(primary: String?, asciiCapable: () -> String?) -> String? {
+    if let primary, isASCII(primary) { return primary }
+    if let ascii = asciiCapable(), isASCII(ascii) { return ascii }
+    return nil
+  }
+
+  static func isASCII(_ s: String) -> Bool { !s.isEmpty && s.unicodeScalars.allSatisfy(\.isASCII) }
 
   /// The keycode that types "v" with ⌘ in `layout` (9 on QWERTY, 47 on Dvorak), or nil. Keycode 9
   /// is tried first, so layouts that keep ⌘V there are never moved to a duplicate key.
@@ -53,7 +64,11 @@ public enum KeyboardLayoutCharacter {
        let data = layoutData(of: source) {
       return data
     }
-    return TISCopyCurrentASCIICapableKeyboardLayoutInputSource().flatMap { layoutData(of: $0.takeRetainedValue()) }
+    return asciiCapableLayoutData()
+  }
+
+  static func asciiCapableLayoutData() -> Data? {
+    TISCopyCurrentASCIICapableKeyboardLayoutInputSource().flatMap { layoutData(of: $0.takeRetainedValue()) }
   }
 
   /// Layout data of an installed input source, e.g. "com.apple.keylayout.Dvorak"; nil if absent.
