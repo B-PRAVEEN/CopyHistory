@@ -174,6 +174,7 @@ import Testing
   @Test func writesAreDebounced() {
     let url = tempURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
     let store = HistoryStore(fileURL: url, saveDelay: 60)
+    store.flush()  // the launch-time write (nothing to write yet), so it cannot race the adds
     for i in 0..<5 { _ = store.add(text("e\(i)")) }
     #expect(!FileManager.default.fileExists(atPath: url.path))
     store.flush()

@@ -158,6 +158,15 @@ extension PopupPolicy {
     return .entry(live.entry, unscanned: live.unscanned)
   }
 
+  /// Where the selection goes when the list reloads under it (an OCR result, the expiry timer): it
+  /// stays on the same entry, wherever that is now. nil when that entry is gone: nothing is
+  /// selected (show `entryGoneMessage`), so Return cannot paste the row that slid into its place.
+  /// No entry was selected (an empty list): the first row.
+  public static func selection(afterReloadOf selectedID: UUID?, in ids: [UUID]) -> Int? {
+    guard let selectedID else { return 0 }
+    return ids.firstIndex(of: selectedID)
+  }
+
   /// Copy-only (⌘C): an image never checked for secrets is copied concealed and cleared shortly, so
   /// the popup stays open to say so; anything else closes it.
   public static func followUpAfterCopy(unscanned: Bool) -> PopupFollowUp {
@@ -200,8 +209,9 @@ public struct VaultStatus: Equatable, Sendable {
   }
 
   public var isHealthy: Bool { !isReadOnly && !isRestoring && unsavedPinCount == 0 && unsavedFlaggedImageCount == 0 }
-  /// Retry only helps pins the vault refused; a read-only history is never written this session.
-  public var canRetry: Bool { unsavedPinCount > 0 }
+  /// Retry helps pins the vault refused and kept images the flagged-pins file could not list; a
+  /// read-only history is never written this session.
+  public var canRetry: Bool { unsavedPinCount > 0 || unsavedFlaggedImageCount > 0 }
 
   /// User-facing lines, most serious first. Empty when all is well.
   public var messages: [String] {

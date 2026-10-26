@@ -60,7 +60,7 @@ import Testing
     #expect(VaultStatus().unsavedFlaggedImageCount == 0)
     let one = VaultStatus(unsavedFlaggedImageCount: 1)
     #expect(!one.isHealthy)
-    #expect(!one.canRetry)  // the Keychain retry button is not for this; the next write retries
+    #expect(one.canRetry)  // FF-M2: Settings can ask for another write (the next flush also retries)
     #expect(one.messages.count == 1)
     #expect(one.messages[0].hasPrefix("1 pinned image with sensitive text was not saved"))
     #expect(VaultStatus(unsavedFlaggedImageCount: 3).messages[0].hasPrefix("3 pinned images with sensitive text were not saved"))

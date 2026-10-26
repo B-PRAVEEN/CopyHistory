@@ -93,10 +93,19 @@ final class PopupViewModel: ObservableObject {
     selection = items.isEmpty ? 0 : min(selection, items.count - 1)
   }
 
-  private func reloadKeepingSelection() {
+  /// A reload the user did not ask for (an OCR result, the expiry timer): the selection stays on the
+  /// same entry. If that entry is gone nothing is selected, so Return never pastes another one.
+  func reloadKeepingSelection() {
+    let hadSelection = selectedEntry != nil
     let selectedID = selectedEntry?.id
     reload()
-    if let selectedID, let i = items.firstIndex(where: { $0.id == selectedID }) { selection = i }
+    guard hadSelection else { return }
+    if let i = PopupPolicy.selection(afterReloadOf: selectedID, in: items.map(\.id)) {
+      selection = i
+    } else {
+      selection = -1
+      if mode == .list { message = PopupPolicy.entryGoneMessage }
+    }
   }
 
   var selectedEntry: ClipboardEntry? { items.indices.contains(selection) ? items[selection] : nil }

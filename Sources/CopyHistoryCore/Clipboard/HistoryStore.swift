@@ -54,11 +54,15 @@ import Foundation
 /// - A side file that exists but cannot be read or decoded fails closed: every pinned image loaded
 ///   from disk is flagged with its files kept. That state is never written back: the side file is
 ///   left as it is and read again before each write (and at the next launch), and once it reads,
-///   pins it does not list get their clean state back. Only when a pin flagged this session must be
-///   listed while it is still unreadable is it replaced, by the fail-closed superset.
+///   pins it does not list get their clean state back. A file that is missing by then is no such
+///   read (it may have been the unreadable one): the pins stay flagged. Only when a pin flagged this
+///   session must be listed while it is still unreadable, or when it is gone, is it replaced, by the
+///   fail-closed superset.
 /// - When the side file cannot be updated, a kept pin it does not list yet is left out of that
 ///   write (memory only, its PNG kept, see `flaggedPinsNotSaved`) rather than saved where a relaunch
-///   would load it unflagged; the rest of the history is still written.
+///   would load it unflagged; the rest of the history is still written. Every later write (a flush,
+///   the one at quit, `retryVaultWrites()`) tries again. If it still fails at quit, the PNG of a pin
+///   a scan flagged is removed (`flushForTermination()`), since no record on disk points at it.
 ///
 /// Persistence: mutations only mark the store dirty when something actually changed; writes are
 /// coalesced on a background queue, and are skipped when the encoded bytes are unchanged. Images
@@ -102,6 +106,8 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
   /// Pins flagged only because the side file could not be read (fail closed): never written to it,
   /// and cleared by a later successful read unless it lists them or a scan confirms them.
   private var suspectFlaggedPins: Set<UUID> = []
+  /// Set by `deinit`: nothing may post with `object: self` from its final flush.
+  private var isDeinitializing = false
   private var generation = 0
   private var saveScheduled = false
   /// The debounced save, cancelled when a write makes it redundant and on deinit.
@@ -115,6 +121,8 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
   private var loadedImageIDs: Set<UUID> = []
   /// The ids `history.flagged-pins.json` holds; nil when it is unreadable and must be rewritten.
   private var writtenFlaggedPins: Set<UUID>? = []
+  /// Kept pins left out of the history file now on disk (`flaggedPinsNotSaved` as of that write).
+  private var unlistedOnDisk: Set<UUID> = []
   private var vaultedIDs: Set<UUID> = []
   /// Vault items that only a user action may delete: pins whose vault read failed at load (e.g.
   /// Keychain access denied after a re-sign). Set by `restoreVault`, then read on `ioQueue`.
@@ -221,7 +229,7 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
 
       terminateObserver = NotificationCenter.default.addObserver(
         forName: Notification.Name("NSApplicationWillTerminateNotification"), object: nil, queue: nil
-      ) { [weak self] _ in self?.flush() }
+      ) { [weak self] _ in self?.flushForTermination() }
     }
 
     if let purgeInterval, purgeInterval > 0 {
@@ -238,7 +246,7 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
 
   deinit {
     purgeTimer?.cancel()
-    lock.lock(); saveWork?.cancel(); saveWork = nil; lock.unlock()
+    lock.lock(); saveWork?.cancel(); saveWork = nil; isDeinitializing = true; lock.unlock()
     if let terminateObserver { NotificationCenter.default.removeObserver(terminateObserver) }
     flush()
   }
@@ -386,6 +394,24 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
     if DispatchQueue.getSpecific(key: Self.ioQueueKey) == true { writePending() } else { ioQueue.sync { writePending() } }
   }
 
+  /// The last write, at quit: as `flush()`, then the PNG of a pin a scan flagged that is still left
+  /// out of the history file on disk is removed, as nothing would ever reference or delete it.
+  /// Suspects (flagged only because the side file is unreadable) keep theirs: they may be clean.
+  func flushForTermination() {
+    let work = {
+      self.writePending()
+      self.lock.lock(); let orphans = self.unlistedOnDisk.subtracting(self.suspectFlaggedPins); self.lock.unlock()
+      for id in orphans {
+        if let url = self.imageURL(id) { try? FileManager.default.removeItem(at: url) }
+      }
+      self.writtenImageIDs.subtract(orphans)
+      self.loadedImageIDs.subtract(orphans)
+      self.unlistedOnDisk.subtract(orphans)
+      self.lock.lock(); self.keptFlaggedPins.subtract(orphans); self.lock.unlock()
+    }
+    if DispatchQueue.getSpecific(key: Self.ioQueueKey) == true { work() } else { ioQueue.sync(execute: work) }
+  }
+
   // MARK: - Internals
 
   /// Applies `body` and schedules a save only if the items actually changed.
@@ -466,9 +492,15 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
 
   /// Runs on `ioQueue`.
   private func writePending() {
-    if writtenFlaggedPins == nil, let fileURL, let listed = Self.readFlaggedPins(next: fileURL) {
-      writtenFlaggedPins = listed
-      recoverFlaggedPins(listed: listed)
+    // Only a file that exists and decodes clears suspects: a missing one may be the unreadable one.
+    if writtenFlaggedPins == nil, let fileURL {
+      if let listed = Self.readFlaggedPins(next: fileURL, missingIsEmpty: false) {
+        writtenFlaggedPins = listed
+        recoverFlaggedPins(listed: listed)
+      } else if !FileManager.default.fileExists(atPath: Self.flaggedPinsURL(next: fileURL).path) {
+        // Gone while kept pins are on disk: write the superset now, not at some later change.
+        lock.lock(); if !keptFlaggedPinsOnDisk.isEmpty { generation += 1 }; lock.unlock()
+      }
     }
     lock.lock()
     saveScheduled = false
@@ -531,14 +563,19 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
     } else {
       // Still unreadable: it fails closed for every suspect, so it is left alone unless a pin flagged
       // this session must be listed; then it is replaced by the superset (suspects stay flagged).
+      // Gone: nothing is left to protect, and the superset must be on disk before the JSON holds
+      // records that would otherwise load unflagged.
       lock.lock(); let confirmed = keptOnDisk.subtracting(suspectFlaggedPins); lock.unlock()
-      if !confirmed.isEmpty {
+      let missing = !fm.fileExists(atPath: Self.flaggedPinsURL(next: fileURL).path)
+      if !confirmed.isEmpty || (missing && !keptOnDisk.isEmpty) {
         if Self.writeFlaggedPins(keptOnDisk, next: fileURL) {
           writtenFlaggedPins = keptOnDisk
           lock.lock(); suspectFlaggedPins = []; lock.unlock()
         } else {
-          unlisted = confirmed
+          unlisted = missing ? keptOnDisk : confirmed
         }
+      } else if missing {
+        writtenFlaggedPins = []  // no kept pin on disk: the missing file is right
       }
     }
     if !unlisted.isEmpty {
@@ -554,7 +591,9 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
       guard Self.writePrivate(data, to: fileURL) else { return }
       lastWrittenJSON = data
     }
-    writtenGeneration = gen
+    unlistedOnDisk = unlisted
+    // A pin left out is written by the next write: a flush, the one at quit, or a retry.
+    if unlisted.isEmpty { writtenGeneration = gen }
     if let listed = writtenFlaggedPins, listed != keptOnDisk, Self.writeFlaggedPins(keptOnDisk, next: fileURL) {
       writtenFlaggedPins = keptOnDisk
     }
@@ -600,8 +639,9 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
     keptFlaggedPinsOnDisk.subtract(cleared)
     unpinnedKeptOnDisk.subtract(cleared)
     if !cleared.isEmpty { generation += 1 }
+    let post = !cleared.isEmpty && !isDeinitializing  // never hand out `self` from deinit's flush
     lock.unlock()
-    if !cleared.isEmpty { NotificationCenter.default.post(name: Self.didUpdateEntriesNotification, object: self) }
+    if post { NotificationCenter.default.post(name: Self.didUpdateEntriesNotification, object: self) }
   }
 
   /// Asks for another attempt to store `pinsNotSavedToVault` (e.g. after the user allowed Keychain access).
@@ -706,9 +746,10 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
       items[i].findings = [SecretFinding(category: .genericSecret, range: end..<end)]
     }
     for (id, plain) in texts {
-      // A suspect pin (flagged only to fail closed) is confirmed by its vault item.
+      // A suspect pin (flagged only to fail closed) is confirmed by its vault item. A legacy image
+      // pin listed in the side file loads flagged (masked) but still gets its exact text back.
       guard let i = items.firstIndex(where: { $0.id == id }),
-            items[i].findings.isEmpty || suspectFlaggedPins.remove(id) != nil else { continue }
+            items[i].findings.isEmpty || suspectFlaggedPins.remove(id) != nil || keptFlaggedPins.contains(id) else { continue }
       var e = items[i]
       if e.kind == .image {
         e.ocrText = plain
@@ -774,11 +815,11 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
     url.deletingLastPathComponent().appendingPathComponent("history.flagged-pins.json")
   }
 
-  /// The listed ids; empty when there is no file, nil when it exists but cannot be read or holds
-  /// anything but ids (the caller fails closed).
-  private static func readFlaggedPins(next url: URL) -> Set<UUID>? {
+  /// The listed ids; empty when there is no file (nil unless `missingIsEmpty`), nil when it exists
+  /// but cannot be read or holds anything but ids (the caller fails closed).
+  private static func readFlaggedPins(next url: URL, missingIsEmpty: Bool = true) -> Set<UUID>? {
     let data: Data
-    do { data = try Data(contentsOf: flaggedPinsURL(next: url)) } catch { return isNoSuchFile(error) ? [] : nil }
+    do { data = try Data(contentsOf: flaggedPinsURL(next: url)) } catch { return missingIsEmpty && isNoSuchFile(error) ? [] : nil }
     guard let raw = try? JSONDecoder().decode([String].self, from: data) else { return nil }
     let ids = raw.compactMap(UUID.init(uuidString:))
     return ids.count == raw.count ? Set(ids) : nil

@@ -102,7 +102,8 @@ public final class PasteStackPasteboardWriter: PasteStackWriting {
 /// releases) — time for the target app to read the pasteboard — the head is popped and the next
 /// entry written. Presses inside that window restart it, so a double-tap advances once. A release
 /// that never arrives (e.g. the tap was disabled mid-press) advances after `keyUpTimeout`, unless the
-/// key is still held then: a held ⌘V advances exactly once, after its release.
+/// key is still held then: a held ⌘V advances exactly once, after its release (or after
+/// `maxHeldKeyRounds` rounds, if the key never reads as released).
 /// A target that reads the pasteboard later than that (a remote desktop, a stalled app) can still
 /// get the next entry.
 /// When the last entry has been pasted the mode ends (`.finished`); `cancel()` ends it early.
@@ -130,6 +131,9 @@ public final class PasteStackEngine {
   public static let defaultAdvanceDelay: TimeInterval = 0.25
   /// How long after a ⌘V press the stack advances anyway when its release is never reported.
   public static let keyUpTimeout: TimeInterval = 1
+  /// A key reported down for this many `keyUpTimeout` rounds (e.g. a virtual keyboard that never
+  /// posted its key-up) no longer holds the stack back: it advances anyway.
+  public static let maxHeldKeyRounds = 30
   /// A flagged head can wait on the pasteboard this long before it is cleared. After a clear the
   /// next ⌘V pastes nothing, and the stack re-writes the head instead of advancing.
   public static let secretHoldSeconds: TimeInterval = 120
@@ -300,12 +304,14 @@ public final class PasteStackEngine {
 
   /// Runs the advance `delay` from now unless another ⌘V press or release comes first.
   /// `unlessHeld`: the key-up timeout; while the awaited key is still down it waits another round.
-  private func scheduleAdvance(after delay: TimeInterval, unlessHeld: Bool = false) {
+  /// `heldRounds`: how many rounds it has already waited for the key (see `maxHeldKeyRounds`).
+  private func scheduleAdvance(after delay: TimeInterval, unlessHeld: Bool = false, heldRounds: Int = 0) {
     let current = generation
     schedule(delay) { [weak self] in
       guard let self, current == self.generation else { return }
-      if unlessHeld, let pending = self.awaitingKeyUp, self.keyMonitor?.isKeyDown(pending) == true {
-        self.scheduleAdvance(after: delay, unlessHeld: true)
+      if unlessHeld, heldRounds < Self.maxHeldKeyRounds, let pending = self.awaitingKeyUp,
+         self.keyMonitor?.isKeyDown(pending) == true {
+        self.scheduleAdvance(after: delay, unlessHeld: true, heldRounds: heldRounds + 1)
         return
       }
       let pastedHead = self.pastedHeadSinceAdvance

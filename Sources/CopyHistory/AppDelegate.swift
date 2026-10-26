@@ -72,7 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let expire: @MainActor () -> Void = { [weak self] in
       guard let self else { return }
       self.services.store.removeExpired(now: Date())
-      if self.popup.isVisible { self.popup.viewModel.reload() }
+      if self.popup.isVisible { self.popup.viewModel.reloadKeepingSelection() }
     }
     let timer = Timer(timeInterval: 60, repeats: true) { _ in
       MainActor.assumeIsolated { expire() }

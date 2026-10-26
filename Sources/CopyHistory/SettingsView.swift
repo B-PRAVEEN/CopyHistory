@@ -90,10 +90,12 @@ struct SettingsView: View {
           }
           if settings.vaultStatus.canRetry {
             HStack {
-              Text("Allow Keychain access when asked, then retry.")
-                .font(.caption).foregroundStyle(.secondary)
+              if settings.vaultStatus.unsavedPinCount > 0 {
+                Text("Allow Keychain access when asked, then retry.")
+                  .font(.caption).foregroundStyle(.secondary)
+              }
               Spacer()
-              Button("Retry saving to Keychain") { settings.retryVaultWrites() }
+              Button("Retry saving") { settings.retryVaultWrites() }
             }
           }
         }
