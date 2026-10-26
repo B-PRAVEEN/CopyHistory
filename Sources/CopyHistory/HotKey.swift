@@ -9,15 +9,15 @@ struct HotKeySpec: Equatable, Sendable {
 }
 
 /// Loads/saves the global shortcut from UserDefaults (L1: the shortcut is configurable
-/// so it need not steal ⇧⌘V system-wide). Plain UserDefaults access; safe from any thread.
+/// so it need not steal its default system-wide). Plain UserDefaults access; safe from any thread.
 enum HotKeyPreferences {
   private static let codeKey = "hotKeyCode"
   private static let modifiersKey = "hotKeyModifiers"
   private static let displayKey = "hotKeyDisplay"
 
   static let fallback = HotKeySpec(keyCode: UInt32(kVK_ANSI_V),
-                                   modifiers: UInt32(cmdKey | shiftKey),
-                                   display: "⇧⌘V")
+                                   modifiers: UInt32(optionKey),
+                                   display: "⌥V")
 
   static func current(defaults: UserDefaults = .standard) -> HotKeySpec {
     guard let code = defaults.object(forKey: codeKey) as? Int,

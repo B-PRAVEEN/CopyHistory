@@ -62,7 +62,7 @@ signature instead of the default ad-hoc one — see Signing below.
 
 ## Keyboard shortcuts
 
-Global hotkey: **Shift+Cmd+V** (⇧⌘V) toggles the popup; it is configurable
+Global hotkey: **Option+V** (⌥V) toggles the popup; it is configurable
 in Settings (a replacement must include Command or Control).
 
 Inside the popup:

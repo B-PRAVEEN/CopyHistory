@@ -93,7 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     statusItem.button?.image = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: "CopyHistory")
     let menu = NSMenu()
-    menu.addItem(withTitle: "Show History  ⇧⌘V", action: #selector(showHistory), keyEquivalent: "").target = self
+    menu.addItem(withTitle: "Show History  ⌥V", action: #selector(showHistory), keyEquivalent: "").target = self
     menu.addItem(withTitle: "Clear Unpinned", action: #selector(clearUnpinned), keyEquivalent: "").target = self
     menu.addItem(.separator())
     menu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",").target = self
