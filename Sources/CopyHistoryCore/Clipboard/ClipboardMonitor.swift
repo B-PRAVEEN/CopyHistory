@@ -62,6 +62,11 @@ public final class ClipboardMonitor {
   public var onEntry: ((ClipboardEntry) -> Void)?
   /// Like `onEntry` (both are called), plus whether an `onOCR` update for the entry will follow.
   public var onCapture: ((ClipboardEntry, _ awaitingOCR: Bool) -> Void)?
+  /// The pasteboard `changeCount` the entry being delivered was read from; set only while `onEntry`
+  /// and `onCapture` run, nil otherwise. Comparing it with the current `changeCount` tells whether
+  /// the pasteboard still holds that very copy (conversion runs off the main thread, so a newer copy
+  /// may already be there).
+  public private(set) var capturingChangeCount: Int?
   /// The text recognised in an image entry delivered earlier; exactly one per `awaitingOCR` entry.
   public var onOCR: ((OCRUpdate) -> Void)?
   /// nil disables OCR. Read at copy time.
@@ -169,12 +174,12 @@ public final class ClipboardMonitor {
       }
       // Main-queue FIFO keeps entries in copy order.
       DispatchQueue.main.async { [weak self] in
-        MainActor.assumeIsolated { self?.finish(entry, ocr: recognizer, expiry: expiry) }
+        MainActor.assumeIsolated { self?.finish(entry, changeCount: count, ocr: recognizer, expiry: expiry) }
       }
     }
   }
 
-  private func finish(_ entry: ClipboardEntry?, ocr: (any OCRRecognizing)?, expiry: TimeInterval) {
+  private func finish(_ entry: ClipboardEntry?, changeCount: Int, ocr: (any OCRRecognizing)?, expiry: TimeInterval) {
     if let entry {
       // OCR starts only after the entry is delivered, so its update can never overtake it.
       var job: OCRJob?
@@ -182,8 +187,10 @@ public final class ClipboardMonitor {
         job = OCRJob(entry: entry, png: png, ocr: ocr, deadline: entry.firstCopiedAt.addingTimeInterval(ocrTimeBudget),
                      expiry: expiry)
       }
+      capturingChangeCount = changeCount
       onEntry?(entry)
       onCapture?(entry, job != nil)
+      capturingChangeCount = nil
       if let job { pending += 1; ocrBacklog.append(job); runNextOCR() }
     }
     settle()

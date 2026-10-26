@@ -31,6 +31,23 @@ public enum KeyboardLayoutCharacter {
     return character(forKeyCode: keyCode, layout: layout)
   }
 
+  /// The keycode that types "v" with ⌘ in `layout` (9 on QWERTY, 47 on Dvorak), or nil. Keycode 9
+  /// is tried first, so layouts that keep ⌘V there are never moved to a duplicate key.
+  public static func commandVKeyCode(layout: Data, keyboardType: UInt32 = UInt32(LMGetKbdType())) -> UInt16? {
+    let isV = { (keyCode: UInt16) in
+      character(forKeyCode: keyCode, layout: layout, keyboardType: keyboardType)?.lowercased() == "v"
+    }
+    if isV(PasteStackKeyPress.vKeyCode) { return PasteStackKeyPress.vKeyCode }
+    return (0...127).first(where: isV)
+  }
+
+  /// The keycode to post for a synthetic ⌘V in the active layout, so the target app reads "v" (and
+  /// the Paste Stack's tap, which classifies by the same layout, sees ⌘V). Falls back to keycode 9.
+  /// Call on the main thread (Text Input Sources requirement).
+  public static func currentCommandVKeyCode() -> UInt16 {
+    currentLayoutData().flatMap { commandVKeyCode(layout: $0) } ?? PasteStackKeyPress.vKeyCode
+  }
+
   static func currentLayoutData() -> Data? {
     if let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
        let data = layoutData(of: source) {

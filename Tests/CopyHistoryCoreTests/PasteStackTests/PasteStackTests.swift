@@ -506,12 +506,13 @@ private final class Clock: @unchecked Sendable { var now = Date(timeIntervalSinc
     #expect(h.pasteboard.text == nil)  // OCR text is never put on the pasteboard
   }
 
-  @Test func plainImageIsInternalButNotConcealed() {
+  @Test func imageWithoutOCRIsInternalAndConcealed() {
+    // Never scanned (OCR off or backlog full): it may show a secret, so it is concealed (review R-M2).
     let h = Harness()
     h.engine.start(useKeyMonitor: true)
     h.copy(ClipboardEntry(kind: .image, imagePNG: Data([1, 2])))
     #expect(h.pasteboard.isInternal)
-    #expect(!h.pasteboard.isConcealed)
+    #expect(h.pasteboard.isConcealed)
   }
 
   // MARK: Late OCR results
@@ -522,7 +523,7 @@ private final class Clock: @unchecked Sendable { var now = Date(timeIntervalSinc
     let image = ClipboardEntry(kind: .image, imagePNG: Data([1, 2]))
     h.copy(image, awaitingOCR: true)
     #expect(h.pasteboard.isConcealed)
-    h.engine.applyOCR(entryID: image.id, ocrText: "hello", findings: [])
+    h.engine.applyOCR(entryID: image.id, scanned: true, ocrText: "hello", findings: [])
     #expect(!h.pasteboard.isConcealed)
     #expect(h.pasteboard.isInternal)
     #expect(h.engine.stack.peek?.ocrText == "hello")
@@ -535,7 +536,7 @@ private final class Clock: @unchecked Sendable { var now = Date(timeIntervalSinc
     let image = ClipboardEntry(kind: .image, imagePNG: Data([1, 2]))
     h.copy(image, awaitingOCR: true)
     let findings = [SecretFinding(category: .awsAccessKey, range: 0..<20)]
-    h.engine.applyOCR(entryID: image.id, ocrText: "AKIAFAKEFAKEFAKEFAKE", findings: findings)
+    h.engine.applyOCR(entryID: image.id, scanned: true, ocrText: "AKIAFAKEFAKEFAKEFAKE", findings: findings)
     #expect(h.pasteboard.text == "first")  // the head is untouched
     h.paste()
     #expect(h.pasteboard.contents["public.png"] == Data([1, 2]))
@@ -559,7 +560,7 @@ private final class Clock: @unchecked Sendable { var now = Date(timeIntervalSinc
     h.engine.start(useKeyMonitor: true)
     h.copy(text("a"))
     let before = h.pasteboard.changeCount
-    h.engine.applyOCR(entryID: UUID(), ocrText: "x", findings: [])
+    h.engine.applyOCR(entryID: UUID(), scanned: true, ocrText: "x", findings: [])
     #expect(h.pasteboard.changeCount == before)
   }
 }

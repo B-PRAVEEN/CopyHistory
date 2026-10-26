@@ -87,7 +87,8 @@ final class PasteService {
 
   private static func postCommandV() {
     let source = CGEventSource(stateID: .combinedSessionState)
-    let vKey: CGKeyCode = 9
+    // The key that types "v" in the active layout (47 on Dvorak): keycode 9 would be ⌘K there.
+    let vKey = CGKeyCode(KeyboardLayoutCharacter.currentCommandVKeyCode())
     for down in [true, false] {
       let event = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: down)
       event?.flags = .maskCommand

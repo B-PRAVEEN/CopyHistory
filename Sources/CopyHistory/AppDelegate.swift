@@ -28,7 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ) { _ in MainActor.assumeIsolated { reinstall() } }
     startExpiryTimer()
     services.start()
-    if let problem = services.pasteStack.register() { NSLog("Paste Stack hotkey unavailable: %@", problem) }
+    services.pasteStack.registerAndReport()
     services.pasteStack.onChange = { [weak self] in self?.updateStatusBadge() }
   }
 

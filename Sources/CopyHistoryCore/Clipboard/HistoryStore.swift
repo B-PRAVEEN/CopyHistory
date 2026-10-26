@@ -283,6 +283,15 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
     return !scannedImages.contains(id)
   }
 
+  /// The entry as stored now, and `isUnscannedImage` for it, read together. A paste decides from
+  /// this rather than from a UI snapshot, which a late OCR result may have flagged since. nil when
+  /// the entry is gone.
+  public func pasteState(of id: UUID) -> (entry: ClipboardEntry, unscanned: Bool)? {
+    lock.lock(); defer { lock.unlock() }
+    guard let e = items.first(where: { $0.id == id }) else { return nil }
+    return (e, e.kind == .image && e.findings.isEmpty && !scannedImages.contains(id))
+  }
+
   public func togglePin(_ id: UUID) {
     mutate { items in
       if let i = items.firstIndex(where: { $0.id == id }) { items[i].pinned.toggle() }

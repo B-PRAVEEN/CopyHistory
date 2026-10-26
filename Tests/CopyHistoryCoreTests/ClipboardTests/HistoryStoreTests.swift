@@ -620,8 +620,13 @@ import Testing
     #expect(vault.all[e.id] == Self.fakeSecret)
   }
 
-  @Test func keychainVaultListsAnEmptyServiceAsEmpty() {
-    // Read-only query on an unused service: no item is created and no prompt is shown.
-    #expect(KeychainVault(service: "com.example.copyhistory.test-empty-\(UUID().uuidString)").ids() == [])
+  @Test func emptyVaultListsAsEmptyNotUnavailable() throws {
+    // An injected in-memory vault: tests never touch the user's login Keychain.
+    let url = tempURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+    let vault = InMemoryVault()
+    #expect(vault.ids() == [])  // empty, not nil (nil would mean "could not be listed")
+    let store = HistoryStore(fileURL: url, vault: vault)
+    _ = store.add(text("plain")); store.flush()
+    #expect(vault.ids() == [])
   }
 }

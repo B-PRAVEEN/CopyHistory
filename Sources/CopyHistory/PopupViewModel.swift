@@ -15,6 +15,8 @@ final class PopupViewModel: ObservableObject {
   @Published var transformSelection = 0
   @Published private(set) var isTransforming = false
   private let transformSession = TransformSession()
+  /// Non-activating, so showing it never takes focus from the paste target.
+  private let hud = PasteStackHUD()
   private var transformEntry: ClipboardEntry?  // fixed when the picker opens; a reload can't retarget it
   @Published private(set) var message: String?
   @Published private(set) var focusTick = 0
@@ -163,25 +165,43 @@ final class PopupViewModel: ObservableObject {
   }
 
   func pasteSelected(flipPlain: Bool) {
-    guard let entry = selectedEntry else { return }
-    perform(PopupPolicy.decide(entry, request: .entry, plainOnly: isPlainOnly(flip: flipPlain),
-                               isRestoringVault: isRestoringVault), copyOnly: false)
+    guard let entry = selectedEntry, let current = pasteState(of: entry) else { return }
+    perform(PopupPolicy.decide(current.entry, request: .entry, plainOnly: isPlainOnly(flip: flipPlain),
+                               isRestoringVault: isRestoringVault, unscanned: current.unscanned),
+            copyOnly: false, unscanned: current.unscanned)
   }
 
   /// ⇧⌘↩: pastes only the text recognised in the selected image (as a secret if the image is flagged).
   func pasteSelectedOCRText() {
-    guard mode == .list, let entry = selectedEntry else { return }
-    perform(PopupPolicy.decide(entry, request: .ocrText, plainOnly: false,
-                               isRestoringVault: isRestoringVault), copyOnly: false)
+    guard mode == .list, let entry = selectedEntry, let current = pasteState(of: entry) else { return }
+    perform(PopupPolicy.decide(current.entry, request: .ocrText, plainOnly: false,
+                               isRestoringVault: isRestoringVault, unscanned: current.unscanned),
+            copyOnly: false, unscanned: current.unscanned)
   }
 
   func copyOnly() {
-    guard let entry = selectedEntry else { return }
-    perform(PopupPolicy.decide(entry, request: .entry, plainOnly: false,
-                               isRestoringVault: isRestoringVault), copyOnly: true)
+    guard let entry = selectedEntry, let current = pasteState(of: entry) else { return }
+    perform(PopupPolicy.decide(current.entry, request: .entry, plainOnly: false,
+                               isRestoringVault: isRestoringVault, unscanned: current.unscanned),
+            copyOnly: true, unscanned: current.unscanned)
   }
 
-  private func perform(_ decision: PasteDecision, copyOnly: Bool) {
+  /// The entry as stored now (a late OCR result may have flagged it since the list was loaded) and
+  /// whether it is an image never checked for secrets. nil, with a message, when it is gone.
+  private func pasteState(of entry: ClipboardEntry) -> (entry: ClipboardEntry, unscanned: Bool)? {
+    guard let historyStore else { return (entry, entry.kind == .image) }  // other stores: fail closed
+    guard let state = historyStore.pasteState(of: entry.id) else {
+      message = PopupPolicy.entryGoneMessage
+      reload()
+      return nil
+    }
+    return state
+  }
+
+  /// `unscanned`: the content comes from an image never checked for secrets. It is written as
+  /// concealed and cleared shortly, so a copy the user pastes by hand keeps the popup open to say so.
+  private func perform(_ decision: PasteDecision, copyOnly: Bool, unscanned: Bool = false) {
+    let note = unscanned ? PopupPolicy.unscannedImageMessage : nil
     switch decision {
     case .none:
       return
@@ -190,23 +210,27 @@ final class PopupViewModel: ObservableObject {
     case .deliver(let content, let sensitive):
       if copyOnly {
         pasteService.copy(content, sensitive: sensitive)
-        onClose()
+        if let note { message = note } else { onClose() }
       } else {
-        deliver(content, sensitive: sensitive)
+        deliver(content, sensitive: sensitive, note: note)
       }
     }
   }
 
   /// Pastes into the captured app, or — when there is none (CopyHistory itself was frontmost) —
-  /// copies and keeps the popup open to say so instead of typing ⌘V into a stale target.
-  private func deliver(_ content: PasteContent, sensitive: Bool?) {
+  /// copies and keeps the popup open to say so (`note`, if given) instead of typing ⌘V into a stale target.
+  private func deliver(_ content: PasteContent, sensitive: Bool?, note: String? = nil) {
     guard pasteService.hasPasteTarget else {
       pasteService.copy(content, sensitive: sensitive)
-      message = "Copied — no app to paste into. Press ⌘V where you want it."
+      message = note ?? "Copied — no app to paste into. Press ⌘V where you want it."
       return
     }
     onClose()
-    pasteService.paste(content, sensitive: sensitive)
+    if pasteService.paste(content, sensitive: sensitive) == .paste, note != nil {
+      hud.show(PopupPolicy.unscannedImagePastedMessage, duration: 3)
+    } else if let note {
+      hud.show(note, duration: 4)  // copy-only (no Accessibility): the popup is already closed
+    }
   }
 
   func togglePinSelected() {

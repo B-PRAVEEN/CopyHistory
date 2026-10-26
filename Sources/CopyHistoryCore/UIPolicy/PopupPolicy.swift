@@ -32,6 +32,9 @@ public enum PopupPolicy {
   public static let plainOnlyImageMessage = "Plain-text-only paste is on — images are skipped"
   public static let plainOnlyImageWithTextMessage = "Plain-text-only paste is on — images are skipped (⇧⌘↩ pastes its text)"
   public static let noOCRTextMessage = "No text was recognised in this item"
+  public static let entryGoneMessage = "This item is no longer in the history"
+  public static let unscannedImageMessage = "Not checked for secrets yet, so it was copied as concealed and is cleared from the clipboard shortly. Press ⌘V where you want it."
+  public static let unscannedImagePastedMessage = "Pasted as concealed: this image was not checked for secrets, so it is cleared from the clipboard in a moment."
 
   /// The recognised text of an image entry, if any (whitespace-only counts as none).
   public static func ocrText(of entry: ClipboardEntry) -> String? {
@@ -74,13 +77,14 @@ public enum PopupPolicy {
 
   /// Decides what a paste or copy of `entry` writes. `plainOnly` is the effective plain-text-only
   /// setting for this action (it skips images). Flagged entries, including images flagged through
-  /// their recognised text, are always written as sensitive.
+  /// their recognised text, are always written as sensitive. So is an `unscanned` image (see
+  /// `HistoryStore.isUnscannedImage`), and its recognised text: it may show a secret nobody checked for.
   public static func decide(_ entry: ClipboardEntry, request: PasteRequest, plainOnly: Bool,
-                            isRestoringVault: Bool) -> PasteDecision {
+                            isRestoringVault: Bool, unscanned: Bool = false) -> PasteDecision {
     if isBlockedByVaultRestore(entry, request: request, isRestoringVault: isRestoringVault) {
       return .refuse(restoringVaultMessage)
     }
-    let sensitive = PastePolicy.sensitivity(of: entry)
+    let sensitive = unscanned && entry.kind == .image ? true : PastePolicy.sensitivity(of: entry)
     switch (request, entry.kind) {
     case (.ocrText, _):
       guard let text = ocrText(of: entry) else { return .refuse(noOCRTextMessage) }

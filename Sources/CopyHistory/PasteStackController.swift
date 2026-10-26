@@ -8,9 +8,9 @@ import CopyHistoryCore
 /// Wiring (AppDelegate/AppServices):
 /// - call `registerAndReport()` after launch (it tells the user when the shortcut is taken), or
 ///   `register(_:)` and pass a non-nil message to `reportShortcutProblem(_:)`;
-/// - from the clipboard monitor callback, call `handleCopied(_:awaitingOCR:)` for every captured
-///   entry (it returns false when stack mode is off) and `applyOCR(entryID:ocrText:findings:)` for
-///   every OCR update;
+/// - from the clipboard monitor callback, call `handleCopied(_:awaitingOCR:capturedChangeCount:)` for
+///   every captured entry (it returns false when stack mode is off) and
+///   `applyOCR(entryID:scanned:ocrText:findings:)` for every OCR update;
 /// - observe `onChange` for the menu-bar badge (`isActive`, `count`).
 ///
 /// The ⌘V monitor is a listen-only session `CGEventTap`, installed only while the mode is on. It
@@ -116,9 +116,9 @@ final class PasteStackController {
 
   /// Offer a copy captured by the clipboard monitor. Returns true when it joined the stack.
   @discardableResult
-  func handleCopied(_ entry: ClipboardEntry, awaitingOCR: Bool = false) -> Bool {
+  func handleCopied(_ entry: ClipboardEntry, awaitingOCR: Bool = false, capturedChangeCount: Int? = nil) -> Bool {
     guard engine.isActive else { return false }
-    if engine.enqueue(entry, awaitingOCR: awaitingOCR) { return true }
+    if engine.enqueue(entry, awaitingOCR: awaitingOCR, capturedChangeCount: capturedChangeCount) { return true }
     switch engine.lastRejection {
     case .full?:
       hud.show("Paste Stack is full (\(engine.stack.capacity) items): that copy was not added")
@@ -131,8 +131,8 @@ final class PasteStackController {
   }
 
   /// Forward every OCR update from the clipboard monitor; ignored unless the entry is queued.
-  func applyOCR(entryID: UUID, ocrText: String?, findings: [SecretFinding]) {
-    engine.applyOCR(entryID: entryID, ocrText: ocrText, findings: findings)
+  func applyOCR(entryID: UUID, scanned: Bool, ocrText: String?, findings: [SecretFinding]) {
+    engine.applyOCR(entryID: entryID, scanned: scanned, ocrText: ocrText, findings: findings)
   }
 
   // MARK: Activation

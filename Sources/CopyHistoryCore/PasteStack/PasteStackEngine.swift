@@ -93,7 +93,7 @@ public final class PasteStackPasteboardWriter: PasteStackWriting {
 ///
 /// The head never replaces a copy the stack has not queued: a copy is on the pasteboard first, and
 /// the stack writes its head over it only once the clipboard monitor has delivered that very copy
-/// (`PasteStackWriting.holds`). A newer copy still on its way therefore survives, joins the queue
+/// (its captured `changeCount` is still current, or else `PasteStackWriting.holds`). A newer copy still on its way therefore survives, joins the queue
 /// when it arrives, and that enqueue puts the head back.
 @MainActor
 public final class PasteStackEngine {
@@ -143,9 +143,12 @@ public final class PasteStackEngine {
   private var pastedHeadSinceAdvance = false
   /// `writer.changeCount` right after the last head write; nil when no head is on the pasteboard.
   private var headChangeCount: Int?
-  /// Image entries whose OCR result has not arrived yet. Until it does they are written as sensitive
-  /// (fail closed): the image may show a secret that OCR has not flagged yet.
+  /// Image entries whose OCR result has not arrived yet; only their results are accepted.
   private var awaitingOCR: Set<UUID> = []
+  /// Image entries an OCR scan checked and found clean. Every other image is written as sensitive
+  /// (fail closed): its scan is pending, failed, timed out or never ran (backlog full, OCR off), so
+  /// it may show a secret nobody flagged.
+  private var scannedImages: Set<UUID> = []
 
   public init(writer: PasteStackWriting,
               keyMonitor: PasteKeyMonitoring?,
@@ -174,6 +177,7 @@ public final class PasteStackEngine {
     pastedHeadSinceAdvance = false
     lastRejection = nil
     awaitingOCR = []
+    scannedImages = []
     stack.start()
     var mode = AdvanceMode.fallbackHotKey
     if useKeyMonitor, let keyMonitor,
@@ -200,9 +204,13 @@ public final class PasteStackEngine {
   /// when stack mode is off or the queue is full (by count or bytes); `lastRejection` says why, and
   /// the head is put back over the rejected copy all the same.
   /// `awaitingOCR`: the clipboard monitor will deliver an OCR result for this entry later
-  /// (see `applyOCR`); until then it is treated as sensitive.
+  /// (see `applyOCR`). An image is treated as sensitive until a clean, completed scan arrives.
+  /// `capturedChangeCount`: the pasteboard generation the entry was read from
+  /// (`ClipboardMonitor.capturingChangeCount`). When given, the pasteboard holds this copy exactly
+  /// when its generation is unchanged; otherwise `PasteStackWriting.holds` guesses from its content,
+  /// which cannot tell two images apart.
   @discardableResult
-  public func enqueue(_ entry: ClipboardEntry, awaitingOCR: Bool = false) -> Bool {
+  public func enqueue(_ entry: ClipboardEntry, awaitingOCR: Bool = false, capturedChangeCount: Int? = nil) -> Bool {
     guard stack.isActive else { lastRejection = .inactive; return false }
     let droppedExpired = dropExpiredSecrets()
     lastRejection = stack.rejection(for: entry)
@@ -211,16 +219,18 @@ public final class PasteStackEngine {
       if awaitingOCR { self.awaitingOCR.insert(entry.id) }
       scheduleExpiry(of: entry)
     }
-    if isHeadOnPasteboard || writer.holds(entry) { writeHead() }
+    let holdsEntry = capturedChangeCount.map { writer.changeCount == $0 } ?? writer.holds(entry)
+    if isHeadOnPasteboard || holdsEntry { writeHead() }
     if lastRejection == nil || droppedExpired { onEvent?(.changed) }
     return lastRejection == nil
   }
 
   /// Records the late OCR result for a queued image entry. If it is the head and still on the
-  /// pasteboard, the head is re-written with its final sensitivity (flagged: still concealed; clean:
-  /// unmarked, so it is no longer cleared from under the user).
-  public func applyOCR(entryID: UUID, ocrText: String?, findings: [SecretFinding]) {
+  /// pasteboard, the head is re-written with its final sensitivity (flagged, or not `scanned`: still
+  /// concealed; clean: unmarked, so it is no longer cleared from under the user).
+  public func applyOCR(entryID: UUID, scanned: Bool, ocrText: String?, findings: [SecretFinding]) {
     guard stack.isActive, awaitingOCR.remove(entryID) != nil else { return }
+    if scanned && findings.isEmpty { scannedImages.insert(entryID) }
     let found = stack.update(id: entryID) {
       $0.ocrText = ocrText
       $0.findings = findings
@@ -281,7 +291,7 @@ public final class PasteStackEngine {
     // is not mistaken for the entry behind it.
     let headStillThere = isHeadOnPasteboard
     stack.popNext()
-    defer { awaitingOCR.remove(head.id) }
+    defer { awaitingOCR.remove(head.id); scannedImages.remove(head.id) }
     dropExpiredSecrets()
     if stack.isEmpty {
       // Re-writing the pasted secret shortens its clear from `secretHoldSeconds` to a moment.
@@ -329,6 +339,7 @@ public final class PasteStackEngine {
     guard !expired.isEmpty else { return false }
     stack.removeAll { expired.contains($0.id) }
     awaitingOCR.subtract(expired)
+    scannedImages.subtract(expired)
     return true
   }
 
@@ -349,7 +360,7 @@ public final class PasteStackEngine {
   }
 
   private func isSensitive(_ entry: ClipboardEntry) -> Bool {
-    !entry.findings.isEmpty || awaitingOCR.contains(entry.id)
+    !entry.findings.isEmpty || (entry.kind == .image && !scannedImages.contains(entry.id))
   }
 
   private func end(_ reason: EndReason) {
@@ -357,6 +368,7 @@ public final class PasteStackEngine {
     generation += 1
     headChangeCount = nil
     awaitingOCR = []
+    scannedImages = []
     stack.stop()
     if advanceMode == .commandV { keyMonitor?.stop() }
     advanceMode = nil

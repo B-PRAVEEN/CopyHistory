@@ -37,11 +37,12 @@ struct AppServices {
       let storeOCR = monitor.onOCR
       monitor.onCapture = { entry, awaiting in
         storeCapture?(entry, awaiting)
-        pasteStack.handleCopied(entry, awaitingOCR: awaiting)
+        pasteStack.handleCopied(entry, awaitingOCR: awaiting, capturedChangeCount: monitor.capturingChangeCount)
       }
       monitor.onOCR = { update in
         storeOCR?(update)
-        pasteStack.applyOCR(entryID: update.entryID, ocrText: update.ocrText, findings: update.findings)
+        pasteStack.applyOCR(entryID: update.entryID, scanned: update.scanned, ocrText: update.ocrText,
+                            findings: update.findings)
       }
       monitor.start()
     }
