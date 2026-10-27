@@ -35,4 +35,4 @@ jobs:
         run: swift build
       - name: Test
         shell: bash
-        run: swift test --no-parallel > test.log 2>&1; rc=$?; grep -nE "✘|recorded|Expectation|error:|Fatal" test.log | head -40; tail -n 3 test.log; exit $rc
+        run: set +e; swift test --no-parallel > test.log 2>&1; rc=$?; grep -nE "✘|recorded|Expectation|error:|Fatal" test.log | head -40; tail -n 3 test.log; exit $rc
