@@ -34,4 +34,5 @@ jobs:
       - name: Build
         run: swift build
       - name: Test
-        run: swift test  # runners have Xcode; scripts/test.sh is only for Command-Line-Tools-only Macs
+        shell: bash
+        run: swift test --no-parallel 2>&1 | tail -n 60; exit "${PIPESTATUS[0]}"
