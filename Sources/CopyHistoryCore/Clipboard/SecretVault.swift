@@ -32,7 +32,7 @@ extension SecretVault {
 /// list of the binary that created them, so an app re-signed with a different (e.g. ad-hoc)
 /// identity gets one access prompt per item.
 public final class KeychainVault: SecretVault, @unchecked Sendable {
-  public static let defaultService = "com.example.copyhistory.pinned-secrets"
+  public static let defaultService = "io.github.b-praveen.copyhistory.pinned-secrets"
   private let service: String
 
   public init(service: String = KeychainVault.defaultService) { self.service = service }

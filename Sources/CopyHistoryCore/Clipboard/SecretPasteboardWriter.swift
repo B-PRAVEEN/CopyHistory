@@ -31,7 +31,7 @@ public final class SystemPasteboardWriter: PasteboardWriting {
 /// cleared after a delay if nobody has replaced them in the meantime.
 @MainActor
 public final class SecretPasteboardWriter {
-  public static let internalType = "com.example.copyhistory.internal"
+  public static let internalType = "io.github.b-praveen.copyhistory.internal"
   public static let concealedType = "org.nspasteboard.ConcealedType"
   public static let transientType = "org.nspasteboard.TransientType"
 

@@ -10,6 +10,7 @@ final class AppSettings: ObservableObject {
     static let ignoredApps = "ignoredApps"
     static let plainTextDefault = "plainTextDefault"
     static let redactionExpirySeconds = "redactionExpirySeconds"
+    static let checkForUpdates = UpdateChecker.enabledKey
   }
 
   private let defaults: UserDefaults
@@ -20,6 +21,8 @@ final class AppSettings: ObservableObject {
   @Published var redactionExpirySeconds: Int {
     didSet { defaults.set(redactionExpirySeconds, forKey: Key.redactionExpirySeconds) }
   }
+  /// Off by default; see `UpdateChecker`.
+  @Published var checkForUpdates: Bool { didSet { defaults.set(checkForUpdates, forKey: Key.checkForUpdates) } }
   @Published private(set) var launchAtLogin: Bool
   @Published var launchAtLoginError: String?
   /// History file and vault state; refreshed by `refreshVaultStatus()` (the store does not publish changes).
@@ -34,6 +37,7 @@ final class AppSettings: ObservableObject {
     ignoredApps = defaults.stringArray(forKey: Key.ignoredApps) ?? []
     plainTextDefault = defaults.object(forKey: Key.plainTextDefault) as? Bool ?? false
     redactionExpirySeconds = defaults.object(forKey: Key.redactionExpirySeconds) as? Int ?? 60
+    checkForUpdates = UpdateChecker.isEnabled(in: defaults)
     launchAtLogin = SMAppService.mainApp.status == .enabled
   }
 

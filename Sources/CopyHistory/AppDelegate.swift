@@ -1,25 +1,34 @@
 import AppKit
+import Combine
+import CopyHistoryCore
 import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
   private var services: AppServices!
   private var settings: AppSettings!
+  private var updates: UpdateController!
   private var popup: PopupController!
   private var hotKey: GlobalHotKey?
   private var activeHotKeySpec: HotKeySpec?
   private var statusItem: NSStatusItem!
   private var settingsWindow: NSWindow?
   private var expiryTimer: Timer?
+  private var updateItems: [NSMenuItem] = []
+  private var updateObserver: AnyCancellable?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     services = AppServices.make()
     settings = AppSettings()
+    updates = UpdateController(settings: settings)
     let pasteService = PasteService()
     let viewModel = PopupViewModel(services: services, settings: settings, pasteService: pasteService)
     popup = PopupController(viewModel: viewModel, pasteService: pasteService)
     buildMainMenu()
     buildStatusItem()
+    updateObserver = updates.$available.sink { [weak self] available in
+      MainActor.assumeIsolated { self?.showUpdate(available?.version) }
+    }
     installHotKey()
     // @MainActor function values are Sendable, so the observer block can hold one safely.
     let reinstall: @MainActor () -> Void = { [weak self] in self?.reinstallHotKeyIfChanged() }
@@ -93,6 +102,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     statusItem.button?.image = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: "CopyHistory")
     let menu = NSMenu()
+    // Hidden until an update check finds a newer release.
+    let update = NSMenuItem(title: "", action: #selector(openReleasePage), keyEquivalent: "")
+    update.target = self
+    let hint = NSMenuItem(title: UpdateController.upgradeHint, action: nil, keyEquivalent: "")
+    hint.isEnabled = false
+    updateItems = [update, hint, .separator()]
+    for item in updateItems {
+      item.isHidden = true
+      menu.addItem(item)
+    }
     menu.addItem(withTitle: "Show History  ⌥V", action: #selector(showHistory), keyEquivalent: "").target = self
     menu.addItem(withTitle: "Clear Unpinned", action: #selector(clearUnpinned), keyEquivalent: "").target = self
     menu.addItem(.separator())
@@ -101,6 +120,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     menu.addItem(withTitle: "Quit CopyHistory", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     statusItem.menu = menu
   }
+
+  private func showUpdate(_ version: ReleaseVersion?) {
+    if let version { updateItems.first?.title = "Update available: v\(version)" }
+    for item in updateItems { item.isHidden = version == nil }
+  }
+
+  @objc private func openReleasePage() { updates.openReleasePage() }
 
   /// Accessory apps have no visible menu bar, but an Edit menu is still needed for ⌘C/⌘V/⌘A in text fields.
   private func buildMainMenu() {
@@ -129,7 +155,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   @objc private func showSettings() {
     popup.hide()
     if settingsWindow == nil {
-      let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(settings: settings)))
+      let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(settings: settings, updates: updates)))
       window.title = "CopyHistory Settings"
       window.styleMask = [.titled, .closable]
       window.isReleasedWhenClosed = false

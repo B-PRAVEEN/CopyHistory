@@ -10,6 +10,8 @@ entry — e.g. curl → fetch — before pasting. Coming soon: **image OCR**
 (search/recognise text in copied images) and a **Paste Stack** for pasting
 several entries in sequence.
 
+Source: <https://github.com/B-PRAVEEN/CopyHistory>
+
 ## Build and test
 
 Requires Swift with macOS 14+ SDK. Only the Command Line Tools are installed
@@ -26,9 +28,11 @@ pointing at the Swift Testing framework shipped inside the Command Line
 Tools; extra arguments are passed through (e.g. `./scripts/test.sh --filter …`).
 
 `./scripts/make-app.sh` builds with `swift build -c release`, assembles
-`build/CopyHistory.app` (binary + generated `Info.plist`, `LSUIElement`
-menu-bar app, minimum system version 14.0), code-signs it, verifies the
-signature, and prints the result. Pass `CH_SIGN_ID="<identity>"` for a stable
+`build/CopyHistory.app` (binary + generated `Info.plist`, bundle ID
+`io.github.b-praveen.copyhistory`, `LSUIElement` menu-bar app, minimum system
+version 14.0), code-signs it, verifies the signature, and prints the result.
+The app version (`CFBundleShortVersionString`) comes from the `VERSION` file
+(one line, `X.Y.Z`); bump it there only. Pass `CH_SIGN_ID="<identity>"` for a stable
 signature instead of the default ad-hoc one — see Signing below.
 
 ## Permissions
@@ -41,6 +45,16 @@ signature instead of the default ad-hoc one — see Signing below.
 - **Keychain** — the app stores pinned secrets as generic-password items in
   the user's login Keychain (no access group / data-protection keychain).
   Expect a Keychain access prompt when pinned secrets are first used.
+
+**Upgrading from a build with the old bundle ID (`com.example.copyhistory`):**
+macOS treats the renamed app as a new app. Accessibility and Input Monitoring
+grants do not carry over (grant them again; remove the stale entry with
+`tccutil reset Accessibility com.example.copyhistory`), and pinned secrets
+stored in the Keychain under the old service
+(`com.example.copyhistory.pinned-secrets`) are not read by the new build:
+those pinned entries show only their masked placeholder. Copy anything you
+need out of them with the old build before upgrading; the old Keychain items
+can then be deleted in Keychain Access.
 
 ## Security design
 
@@ -59,6 +73,21 @@ signature instead of the default ad-hoc one — see Signing below.
   are kept off Universal Clipboard (`currentHostOnly`), and **auto-clear**:
   2 seconds after an auto-paste, 30 seconds after copy-only — and only if the
   user hasn't copied something else since.
+
+## Privacy
+
+CopyHistory has no accounts, analytics or telemetry; your history stays on
+your Mac. The **only network request the app ever makes** is the optional
+update check, which is **off by default** (Settings → Updates). When on, it
+asks GitHub at most once a day for the latest release
+(`GET https://api.github.com/repos/B-PRAVEEN/CopyHistory/releases/latest`,
+no cookies, no identifiers beyond `User-Agent: CopyHistory/<version>`, nothing
+about you or your clipboard). **Check now** runs the same request on demand.
+If a newer version exists, the menu bar shows "Update available: vX.Y.Z",
+which opens the release page in your browser; update with
+`brew upgrade --cask copyhistory`. The app never downloads or installs
+anything itself. Details: [PRIVACY.md](PRIVACY.md). To report a security
+issue, see [SECURITY.md](SECURITY.md).
 
 ## Keyboard shortcuts
 
@@ -104,4 +133,8 @@ CH_SIGN_ID="Your Name" scripts/make-app.sh
 A self-signed identity is stable on this Mac only; other machines still see
 an untrusted signature. Fully stable distribution needs a paid Apple
 Developer ID certificate. To clear a stale grant:
-`tccutil reset Accessibility com.example.copyhistory`.
+`tccutil reset Accessibility io.github.b-praveen.copyhistory`.
+
+## License
+
+MIT — see [LICENSE](LICENSE). Copyright (c) 2026 B Praveen.

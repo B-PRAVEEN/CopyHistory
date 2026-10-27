@@ -29,23 +29,31 @@ if [ ! -x "$BIN" ]; then
   exit 1
 fi
 
+# The version lives in ./VERSION (one line, X.Y.Z); the app reads it back from Info.plist for
+# the opt-in update check, which needs a plain numeric version to compare against releases.
+VERSION="$(tr -d '[:space:]' < VERSION)"
+if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+  echo "error: VERSION must be X.Y.Z (got '$VERSION')." >&2
+  exit 1
+fi
+
 APP="build/CopyHistory.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/CopyHistory"
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>CFBundleName</key><string>CopyHistory</string>
   <key>CFBundleDisplayName</key><string>CopyHistory</string>
-  <key>CFBundleIdentifier</key><string>com.example.copyhistory</string>
+  <key>CFBundleIdentifier</key><string>io.github.b-praveen.copyhistory</string>
   <key>CFBundleExecutable</key><string>CopyHistory</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleVersion</key><string>1</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
@@ -61,7 +69,7 @@ else
   codesign --force --sign - "$APP"
   echo "note: ad-hoc signed; macOS revokes Accessibility/Keychain grants on every rebuild." >&2
   echo "  Rebuild with CH_SIGN_ID=\"<code-signing identity>\" for a stable signature," >&2
-  echo "  or reset a stale grant with: tccutil reset Accessibility com.example.copyhistory" >&2
+  echo "  or reset a stale grant with: tccutil reset Accessibility io.github.b-praveen.copyhistory" >&2
 fi
 # Verify the signature we just applied; aborts (set -e) if signing is broken.
 codesign --verify "$APP"

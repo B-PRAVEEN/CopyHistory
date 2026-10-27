@@ -18,7 +18,7 @@ private final class RecordingPasteboard: PasteboardWriting, PasteboardReading {
 
   var text: String? { contents["public.utf8-plain-text"].map { String(decoding: $0, as: UTF8.self) } }
   var isConcealed: Bool { contents["org.nspasteboard.ConcealedType"] != nil }
-  var isInternal: Bool { contents["com.example.copyhistory.internal"] != nil }
+  var isInternal: Bool { contents["io.github.b-praveen.copyhistory.internal"] != nil }
   /// Simulates another app (or the user) writing to the pasteboard.
   func externalCopy(_ s: String) { clearContents(currentHostOnly: false); setString(s, forType: "public.utf8-plain-text") }
   func externalCopy(png: Data) { clearContents(currentHostOnly: false); setData(png, forType: "public.png") }

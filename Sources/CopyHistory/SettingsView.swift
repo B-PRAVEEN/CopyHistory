@@ -77,6 +77,7 @@ final class ShortcutRecorder: ObservableObject {
 
 struct SettingsView: View {
   @ObservedObject var settings: AppSettings
+  @ObservedObject var updates: UpdateController
   @State private var newApp = ""
   @StateObject private var recorder = ShortcutRecorder()
 
@@ -152,15 +153,46 @@ struct SettingsView: View {
           Text(error).font(.caption).foregroundStyle(.orange)
         }
       }
+      Section("Updates") {
+        Toggle("Check for updates", isOn: $settings.checkForUpdates)
+        Text("Asks GitHub once a day whether a new version exists. Sends nothing about you or your "
+             + "clipboard. Never downloads or installs anything.")
+          .font(.caption).foregroundStyle(.secondary)
+        HStack {
+          Text(updateStatus).font(.caption).foregroundStyle(.secondary)
+          Spacer()
+          Button(updates.isChecking ? "Checking…" : "Check now") { updates.checkNow() }
+            .disabled(updates.isChecking || !updates.hasVersion)
+        }
+        if let available = updates.available {
+          HStack {
+            Text("Version \(available.version.description) is available.")
+            Spacer()
+            Button("Open release page") { updates.openReleasePage() }
+          }
+          Text("Or update with: \(UpdateController.upgradeHint)")
+            .font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+        }
+      }
     }
     .formStyle(.grouped)
-    .frame(width: 460, height: 460)
+    .frame(width: 460, height: 520)
     .onDisappear { recorder.cancel() }
     // The Settings window is cached, so onAppear may not run again; refresh whenever it is shown.
     // Refreshing is cheap and idempotent, so any window becoming key is fine as a trigger.
     .onAppear { settings.refreshVaultStatus() }
     .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
       settings.refreshVaultStatus()
+    }
+  }
+
+  private var updateStatus: String {
+    guard updates.hasVersion else { return "Version unknown: run CopyHistory.app to check for updates." }
+    switch updates.lastResult {
+    case nil: return ""
+    case .upToDate: return "CopyHistory is up to date."
+    case .available: return "A new version is available."
+    case .failed: return "Could not check for updates. Try again later."
     }
   }
 
