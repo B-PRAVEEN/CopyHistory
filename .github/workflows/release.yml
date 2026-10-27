@@ -40,7 +40,7 @@ jobs:
       - name: Toolchain
         run: swift --version
       - name: Test
-        run: swift test  # runners have Xcode; scripts/test.sh is only for Command-Line-Tools-only Macs
+        run: swift test --no-parallel
       - name: Build release zip
         run: ./scripts/release.sh --ci
       - name: Publish GitHub Release
