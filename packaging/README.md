@@ -29,6 +29,7 @@ personal tap.
 
    ```sh
    brew tap B-PRAVEEN/tap
+   brew trust B-PRAVEEN/tap   # Homebrew 7 refuses untrusted third-party taps
    brew audit --cask --strict --online B-PRAVEEN/tap/copyhistory
    brew install --cask B-PRAVEEN/tap/copyhistory
    ```

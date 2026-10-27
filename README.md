@@ -36,11 +36,12 @@ curl -LO "https://github.com/B-PRAVEEN/CopyHistory/releases/download/v$V/CopyHis
 shasum -a 256 -c "CopyHistory-$V.zip.sha256" && ditto -x -k "CopyHistory-$V.zip" .
 ```
 
-**Homebrew** (available once the `B-PRAVEEN/homebrew-tap` tap is published;
-it does not exist yet):
+**Homebrew** (from the [`B-PRAVEEN/homebrew-tap`](https://github.com/B-PRAVEEN/homebrew-tap) tap):
 
 ```sh
-brew tap B-PRAVEEN/tap && brew install --cask copyhistory
+brew tap B-PRAVEEN/tap
+brew trust B-PRAVEEN/tap   # Homebrew 7 only loads casks from third-party taps you trust
+brew install --cask copyhistory
 ```
 
 **First launch: the app is not notarised.** CopyHistory is ad-hoc signed and

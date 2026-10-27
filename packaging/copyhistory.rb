@@ -10,7 +10,7 @@ cask "copyhistory" do
   desc "Menu-bar clipboard history with secret detection"
   homepage "https://github.com/B-PRAVEEN/CopyHistory"
 
-  depends_on macos: ">= :sonoma"
+  depends_on macos: :sonoma
 
   app "CopyHistory.app"
 
