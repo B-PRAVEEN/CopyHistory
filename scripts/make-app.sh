@@ -2,6 +2,7 @@
 # Builds a release binary and assembles a signed CopyHistory.app in ./build.
 # Usage: scripts/make-app.sh   (output: build/CopyHistory.app)
 # Env:   CH_SIGN_ID="<code-signing identity>" for a stable (non-ad-hoc) signature.
+#        CH_BIN=<path> to package a prebuilt binary instead of running `swift build`.
 #
 # Signing (M6): an ad-hoc signature ("-") embeds a cdhash-only designated
 # requirement, and macOS TCC keys the Accessibility grant to it — so every
@@ -17,16 +18,25 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-# --show-bin-path is cheap and does not build; resolve it first so the release
-# build below runs exactly once.
-BIN_DIR="$(swift build -c release --show-bin-path)"
-swift build -c release
-BIN="$BIN_DIR/CopyHistory"
-# Fail early with a clear message if the release build did not produce the binary
-# (otherwise the cp below fails with a cryptic "No such file or directory").
-if [ ! -x "$BIN" ]; then
-  echo "error: release build did not produce $BIN; run 'swift build -c release' to see why." >&2
-  exit 1
+if [ -n "${CH_BIN:-}" ]; then
+  # Prebuilt binary (scripts/release.sh passes a lipo-merged universal one): skip the build.
+  BIN="$CH_BIN"
+  if [ ! -x "$BIN" ]; then
+    echo "error: CH_BIN=$BIN is not an executable file." >&2
+    exit 1
+  fi
+else
+  # --show-bin-path is cheap and does not build; resolve it first so the release
+  # build below runs exactly once.
+  BIN_DIR="$(swift build -c release --show-bin-path)"
+  swift build -c release
+  BIN="$BIN_DIR/CopyHistory"
+  # Fail early with a clear message if the release build did not produce the binary
+  # (otherwise the cp below fails with a cryptic "No such file or directory").
+  if [ ! -x "$BIN" ]; then
+    echo "error: release build did not produce $BIN; run 'swift build -c release' to see why." >&2
+    exit 1
+  fi
 fi
 
 # The version lives in ./VERSION (one line, X.Y.Z); the app reads it back from Info.plist for

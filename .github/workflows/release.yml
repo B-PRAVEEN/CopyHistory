@@ -1,0 +1,57 @@
+# Publishes a GitHub Release when a vX.Y.Z tag is pushed.
+# The build is ad-hoc signed and NOT notarised (no Apple Developer ID); users approve it on
+# first launch (see README "Install").
+# No third-party actions: checkout and publishing are plain git and the preinstalled `gh` CLI.
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write  # gh release create; nothing else
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # See ci.yml for the runner choice.
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out (full history, so release.sh can check the tag is on origin/main)
+        run: |
+          AUTH="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          git -c http.extraheader="AUTHORIZATION: basic $AUTH" clone -q "https://github.com/$GITHUB_REPOSITORY.git" .
+          git checkout -q "$GITHUB_SHA"
+          git log -1 --oneline
+      - name: Tag must match VERSION
+        run: |
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          if [ "${GITHUB_REF_NAME#v}" != "$VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match VERSION $VERSION"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+      - name: Toolchain
+        run: swift --version
+      - name: Test
+        run: swift test  # runners have Xcode; scripts/test.sh is only for Command-Line-Tools-only Macs
+      - name: Build release zip
+        run: ./scripts/release.sh --ci
+      - name: Publish GitHub Release
+        run: |
+          ZIP="build/CopyHistory-$VERSION.zip"
+          gh release create "$GITHUB_REF_NAME" "$ZIP" "$ZIP.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "CopyHistory $VERSION" \
+            --notes "Universal (Apple Silicon + Intel) build for macOS 14+.
+
+          This app is ad-hoc signed and not notarised, so macOS asks you to approve it on first launch; see the README Install section.
+
+          SHA-256: \`$(cut -d ' ' -f 1 "$ZIP.sha256")\`"

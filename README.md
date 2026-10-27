@@ -12,6 +12,54 @@ several entries in sequence.
 
 Source: <https://github.com/B-PRAVEEN/CopyHistory>
 
+## Install
+
+Requires macOS 14 Sonoma or later; the build is universal (Apple Silicon and Intel).
+
+**GitHub Releases (primary).** Download `CopyHistory-X.Y.Z.zip` and
+`CopyHistory-X.Y.Z.zip.sha256` from
+<https://github.com/B-PRAVEEN/CopyHistory/releases>, check the zip, unzip it, and
+move `CopyHistory.app` to `/Applications`:
+
+```sh
+cd ~/Downloads
+shasum -a 256 -c CopyHistory-X.Y.Z.zip.sha256   # must print "CopyHistory-X.Y.Z.zip: OK"
+```
+
+Safari unzips downloads by default and discards the `.zip`, so to verify,
+fetch both files with curl instead:
+
+```sh
+V=X.Y.Z
+curl -LO "https://github.com/B-PRAVEEN/CopyHistory/releases/download/v$V/CopyHistory-$V.zip"
+curl -LO "https://github.com/B-PRAVEEN/CopyHistory/releases/download/v$V/CopyHistory-$V.zip.sha256"
+shasum -a 256 -c "CopyHistory-$V.zip.sha256" && ditto -x -k "CopyHistory-$V.zip" .
+```
+
+**Homebrew** (available once the `B-PRAVEEN/homebrew-tap` tap is published;
+it does not exist yet):
+
+```sh
+brew tap B-PRAVEEN/tap && brew install --cask copyhistory
+```
+
+**First launch: the app is not notarised.** CopyHistory is ad-hoc signed and
+has not been notarised by Apple (there is no Apple Developer ID behind it), so
+macOS blocks the first launch with a warning that it cannot check the app for
+malicious software. Approve it once:
+
+- **macOS 15 Sequoia and later:** open the app and dismiss the warning, then go
+  to System Settings → Privacy & Security, scroll to Security, and click
+  **Open Anyway** for CopyHistory (confirm with your password).
+- **macOS 14 Sonoma:** Control-click (right-click) `CopyHistory.app` in
+  Applications, choose **Open**, then **Open** again in the dialog.
+
+Then grant **Accessibility** (System Settings → Privacy & Security →
+Accessibility) so it can auto-paste; see [Permissions](#permissions). Because
+the signature is ad-hoc, each new version is a new signature to macOS: after
+upgrading, re-grant Accessibility even if the toggle still looks on (see
+[Signing](#signing)).
+
 ## Build and test
 
 Requires Swift with macOS 14+ SDK. Only the Command Line Tools are installed
@@ -21,6 +69,7 @@ in this environment (no Xcode), so tests go through a wrapper script:
 swift build            # debug build
 ./scripts/test.sh      # swift test with Swift Testing framework paths for CLT-only Macs
 ./scripts/make-app.sh  # release build -> build/CopyHistory.app (signed bundle, see below)
+./scripts/release.sh --dry-run  # universal release zip + .sha256 in build/ (see Releasing)
 ```
 
 `./scripts/test.sh` just forwards to `swift test` with `-F`/`-rpath` flags
@@ -41,7 +90,9 @@ signature instead of the default ad-hoc one — see Signing below.
   pasteboard the app synthesises ⌘V in the app that was frontmost before the
   popup appeared. Without the grant, pasting degrades to copy-only (content
   stays on the pasteboard with a "press ⌘V where you want it" hint).
-- **Input Monitoring** — not needed yet; planned for the Paste Stack feature.
+- **Input Monitoring** — needed only for Paste Stack: a listen-only monitor sees
+  your ⌘V presses so the next item can be queued. Without it, Paste Stack still
+  works through its fallback shortcut ⌥⌘V (some apps use that shortcut themselves).
 - **Keychain** — the app stores pinned secrets as generic-password items in
   the user's login Keychain (no access group / data-protection keychain).
   Expect a Keychain access prompt when pinned secrets are first used.
@@ -134,6 +185,21 @@ A self-signed identity is stable on this Mac only; other machines still see
 an untrusted signature. Fully stable distribution needs a paid Apple
 Developer ID certificate. To clear a stale grant:
 `tccutil reset Accessibility io.github.b-praveen.copyhistory`.
+
+## Releasing
+
+`scripts/release.sh` builds arm64 and x86_64 release binaries separately,
+merges them with `lipo`, assembles the app through `make-app.sh`
+(`CH_BIN=<universal binary>`), signs it ad-hoc, verifies it (`lipo -archs`,
+`codesign --verify --deep --strict`, `plutil -lint`), and writes
+`build/CopyHistory-X.Y.Z.zip` plus its `.sha256`. It refuses to run unless the
+tree is clean, you are on `main`, and tag `vX.Y.Z` (from `VERSION`) does not
+exist yet; `--dry-run` skips the clean-tree check for local trials. It never
+tags or pushes; it prints the `git push` / `git tag` commands instead. Push
+`main` first, then the tag: the workflow refuses a tag whose commit is not on
+`origin/main`. Pushing the tag runs `.github/workflows/release.yml`, which tests, rebuilds with
+`release.sh --ci`, and publishes the GitHub Release. Homebrew tap steps:
+[packaging/README.md](packaging/README.md).
 
 ## License
 
