@@ -601,7 +601,8 @@ final class MarkdownRenderer {
         guard !shouldStop(sub, force: true) else { return }
         var body = sub.out.trimmingCharacters(in: .whitespacesAndNewlines)
         if !body.contains("```") {
-          while body.contains("\n\n") { body = body.replacingOccurrences(of: "\n\n", with: "\n") }
+          // ⚡ Bolt: Use regex to avoid O(n^2) allocations from while loop contains/replacingOccurrences
+          body = body.replacingOccurrences(of: "\n{2,}", with: "\n", options: .regularExpression)
         }
         let marker = ordered ? "\(index). " : "- "
         index += 1
