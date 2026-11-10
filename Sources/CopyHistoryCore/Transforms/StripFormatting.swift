@@ -35,7 +35,8 @@ public struct StripFormatting: Transform {
       return String(l)
     }
     var out = lines.joined(separator: "\n")
-    while out.contains("\n\n\n") { out = out.replacingOccurrences(of: "\n\n\n", with: "\n\n") }
+    // ⚡ Bolt: Use regex to avoid O(n^2) allocations from while loop contains/replacingOccurrences
+    out = out.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
     out = out.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !out.isEmpty else { throw TransformError.noContent }
     return out
