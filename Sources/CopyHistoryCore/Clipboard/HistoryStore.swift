@@ -258,15 +258,16 @@ public final class HistoryStore: ClipboardHistoryStore, @unchecked Sendable {
 
   public func entries(matching query: String) -> [ClipboardEntry] {
     lock.lock(); defer { lock.unlock() }
-    let sorted = items.sorted {
+    let sort: (ClipboardEntry, ClipboardEntry) -> Bool = {
       $0.pinned != $1.pinned ? $0.pinned : $0.lastCopiedAt > $1.lastCopiedAt
     }
     let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-    if q.isEmpty { return sorted }
+    if q.isEmpty { return items.sorted(by: sort) }
+    // OPTIMIZATION: Filter items first, then sort the smaller result array.
     // Flagged entries are matched against their masked text so search cannot probe hidden characters.
-    return sorted.filter { e in
+    return items.filter { e in
       Self.searchableText(e).map { Self.fuzzyMatch(q, in: e.findings.isEmpty ? $0 : detector.mask($0, findings: e.findings)) } ?? false
-    }
+    }.sorted(by: sort)
   }
 
   /// The string an entry's search and findings refer to: `text`, or `ocrText` for images.
