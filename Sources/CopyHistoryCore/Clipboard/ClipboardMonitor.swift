@@ -151,7 +151,8 @@ public final class ClipboardMonitor {
     let rawText = pasteboard.string()
     // O(1) for pasteboard strings; checked before any O(n) work such as trimming.
     if let rawText, rawText.utf16.count > maxTextLength { return }
-    let text = rawText.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+    // OPTIMIZATION: Avoid O(N) allocation of `.trimmingCharacters()` by using `.allSatisfy(\.isWhitespace)`
+    let text = rawText.flatMap { $0.allSatisfy(\.isWhitespace) ? nil : $0 }
     let image = text == nil ? pasteboard.imageData() : nil
     // The reads above are not atomic: if the pasteboard changed meanwhile (e.g. a password manager
     // wrote a ConcealedType password), the payload may belong to a generation whose types we never
